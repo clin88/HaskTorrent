@@ -1,20 +1,48 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
-module Metainfo where
+module Metainfo (loadMetainfoFile, loadMetainfo, BTMetainfo(), BTInfo(), BTFileinfo()) where
 
-import           Data.BEncode       as BE
-import           Data.BEncode.BDict as BD (BDictMap, lookup)
-import           Data.ByteString    as BS (ByteString, readFile)
-import           Data.Typeable      (Typeable)
+import           Control.Applicative ((<$>), (<*>))
+import           Data.BEncode        as BE
+import           Data.BEncode.BDict  as BD (BDictMap, lookup)
+import           Data.ByteString     as BS (ByteString, readFile)
+import           Data.Typeable       (Typeable)
 
+data BTMetainfo = BTMetainfo
+    { announce     :: ByteString
+    , announceList :: Maybe [[ByteString]]
+    , comment      :: Maybe ByteString
+    , createdBy    :: Maybe ByteString
+    , creationDate :: Maybe ByteString
+    , encoding     :: Maybe ByteString
+    , info         :: BTInfo } deriving (Typeable, Show)
 
+instance BEncode BTMetainfo where
+    toBEncode BTMetainfo {..} = toDict $
+        "announce" .=! announce .:
+        "announce-list" .=? announceList .:
+        "comment" .=? comment .:
+        "created by" .=? createdBy .:
+        "creation date" .=? creationDate .:
+        "encoding" .=? encoding .:
+        "info" .=! info .:
+        endDict
+
+    fromBEncode = fromDict $ BTMetainfo
+        <$>! "announce"
+        <*>? "announce-list"
+        <*>? "comment"
+        <*>? "created by"
+        <*>? "creation date"
+        <*>? "encoding"
+        <*>! "info"
 
 data BTInfo = BTInfo
-    { files       :: [Fileinfo]
+    { files       :: [BTFileinfo]
     , name        :: ByteString
-    , pieces      :: ByteString
     , pieceLength :: Int
+    , pieces      :: ByteString
     , private     :: Maybe Bool } deriving (Typeable, Show)
 
 {- toBEncode is probably not working for either of these classes. But they must
@@ -36,29 +64,35 @@ instance BEncode BTInfo where
         <*>! "pieces"
         <*>? "private"
 
-data Fileinfo = Fileinfo
+data BTFileinfo = BTFileinfo
     { filelen :: Int
     , fMD5sum :: Maybe ByteString
     , path    :: [ByteString] } deriving (Typeable, Show)
 
-instance BEncode Fileinfo where
-    toBEncode Fileinfo {..} = toDict $
+instance BEncode BTFileinfo where
+    toBEncode BTFileinfo {..} = toDict $
         "length" .=! filelen .:
         "md5sum" .=? fMD5sum .:
         "path"   .=! path .:
         endDict
 
-    fromBEncode = fromDict $ Fileinfo
+    fromBEncode = fromDict $ BTFileinfo
         <$>! "length"
         <*>? "md5sum"
         <*>! "path"
 
+loadMetainfoFile :: String -> IO (Result BTMetainfo)
+loadMetainfoFile fn = decode <$> BS.readFile fn
+
+loadMetainfo :: ByteString -> Result BTMetainfo
+loadMetainfo = decode
+
+-- testing helper functions, coz I don't know how to write tests yet.
 getBTDict :: ByteString -> BDictMap BValue
 getBTDict inp = either error id $ do
     (BDict dct) <- decode inp
     return dct
 
---getFileinfoDict :: BDictMap BValue
 getFileinfoDict = do
     content <- BS.readFile "test.torrent"
     dct <- return $ getBTDict content
@@ -72,9 +106,7 @@ getInfoDict = do
     (Just x) <- return $ BD.lookup "info" dct
     return x
 
-loadMetainfo :: ByteString -> Result BTInfo
-loadMetainfo = BTInfo
-
-    do
+getDict = do
     content <- BS.readFile "test.torrent"
-    return $ decode content
+    dct <- return $ (decode content :: Result BValue)
+    return $ either error id dct
