@@ -1,16 +1,14 @@
-import Data.Maybe (fromJust)
-import Control.Monad (liftM, mapM)
-import System.Environment (getArgs)
-import Data.BEncode as BE (decode, BValue(..), Result)
-import Data.BEncode.BDict as BD
-import Data.ByteString.Char8 as BS (ByteString, readFile, pack)
+{-# LANGUAGE RecordWildCards #-}
+import           Control.Monad         (liftM)
+import           Crypto.Hash.SHA1      (hashlazy)
+import           Data.ByteString.Char8 (ByteString, unpack)
+import           Metainfo              (BTMetainfo (..), loadMetainfoFile,
+                                        totalSize)
+import           System.Environment    (getArgs)
+import           Tracker               (BTEvents (..), BTTrackerRequest (..),
+                                        NSBool (..), getTrackerRequest,
+                                        makeQueryString, makeRequest)
 
-getTrackerURL :: BValue -> BValue
-getTrackerURL (BDict dict) = fromJust $ BD.lookup (key "announce") dict
-    where key = BS.pack
-
-decodeBEncode :: ByteString -> BValue
-decodeBEncode bs = either error id $ decode bs
 
 getBTFileName :: IO String
 getBTFileName = do
@@ -19,7 +17,8 @@ getBTFileName = do
         [] -> do print "Specify a bittorrent file please!"; fail "No BT file."
         (x:_) -> return x
 
-main = do
-    btdict <- getBTFileName >>= BS.readFile >>= return . decodeBEncode
-    tracker <- return $ getTrackerURL btdict
-    return ()
+--main = do
+--    fname <- getBTFileName
+--    eMetainfo <- loadMetainfoFile fname
+--    Right (url, request) <- return $ liftM getTrackerRequest eMetainfo
+--    return ()

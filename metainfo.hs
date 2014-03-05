@@ -1,21 +1,31 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
-module Metainfo (loadMetainfoFile, loadMetainfo, BTMetainfo(), BTInfo(), BTFileinfo()) where
+module Metainfo
+    ( loadMetainfoFile
+    , loadMetainfo
+    , BTMetainfo(..)
+    , totalSize
+    , infoHash
+    , trackers
+    ) where
 
-import           Control.Applicative ((<$>), (<*>))
-import           Data.BEncode        as BE
-import           Data.BEncode.BDict  as BD (BDictMap, lookup)
-import           Data.ByteString     as BS (ByteString, readFile)
-import           Data.Typeable       (Typeable)
+import           Control.Applicative   ((<$>), (<*>))
+import           Crypto.Hash.SHA1      (hashlazy)
+import           Data.BEncode          as BE
+import           Data.BEncode.BDict    as BD (BDictMap, lookup)
+import qualified Data.ByteString.Char8 as BS8 (ByteString, readFile)
+import           Data.Maybe            (fromMaybe)
+import           Data.Typeable         (Typeable)
+import           Network.HTTP.Types    (urlEncode)
 
 data BTMetainfo = BTMetainfo
-    { announce     :: ByteString
-    , announceList :: Maybe [[ByteString]]
-    , comment      :: Maybe ByteString
-    , createdBy    :: Maybe ByteString
-    , creationDate :: Maybe ByteString
-    , encoding     :: Maybe ByteString
+    { announce     :: BS8.ByteString
+    , announceList :: Maybe [[BS8.ByteString]]
+    , comment      :: Maybe BS8.ByteString
+    , createdBy    :: Maybe BS8.ByteString
+    , creationDate :: Maybe BS8.ByteString
+    , encoding     :: Maybe BS8.ByteString
     , info         :: BTInfo } deriving (Typeable, Show)
 
 instance BEncode BTMetainfo where
@@ -40,13 +50,11 @@ instance BEncode BTMetainfo where
 
 data BTInfo = BTInfo
     { files       :: [BTFileinfo]
-    , name        :: ByteString
+    , name        :: BS8.ByteString
     , pieceLength :: Int
-    , pieces      :: ByteString
+    , pieces      :: BS8.ByteString
     , private     :: Maybe Bool } deriving (Typeable, Show)
 
-{- toBEncode is probably not working for either of these classes. But they must
-be defined for library to work. -}
 instance BEncode BTInfo where
     toBEncode BTInfo {..} = toDict $
         "files" .=! files .:
@@ -56,7 +64,6 @@ instance BEncode BTInfo where
         "private" .=? private .:
         endDict
 
-    -- I can't get this to work either, but fuck it.
     fromBEncode = fromDict $ BTInfo
         <$>! "files"
         <*>! "name"
@@ -66,8 +73,8 @@ instance BEncode BTInfo where
 
 data BTFileinfo = BTFileinfo
     { filelen :: Int
-    , fMD5sum :: Maybe ByteString
-    , path    :: [ByteString] } deriving (Typeable, Show)
+    , fMD5sum :: Maybe BS8.ByteString
+    , path    :: [BS8.ByteString] } deriving (Typeable, Show)
 
 instance BEncode BTFileinfo where
     toBEncode BTFileinfo {..} = toDict $
@@ -82,31 +89,22 @@ instance BEncode BTFileinfo where
         <*>! "path"
 
 loadMetainfoFile :: String -> IO (Result BTMetainfo)
-loadMetainfoFile fn = decode <$> BS.readFile fn
+loadMetainfoFile fn = decode <$> BS8.readFile fn
 
-loadMetainfo :: ByteString -> Result BTMetainfo
+loadMetainfo :: BS8.ByteString -> Result BTMetainfo
 loadMetainfo = decode
 
--- testing helper functions, coz I don't know how to write tests yet.
-getBTDict :: ByteString -> BDictMap BValue
-getBTDict inp = either error id $ do
-    (BDict dct) <- decode inp
-    return dct
+{- HELPER FUNCTIONS -}
 
-getFileinfoDict = do
-    content <- BS.readFile "test.torrent"
-    dct <- return $ getBTDict content
-    (Just (BDict infoDct)) <- return $ BD.lookup "info" dct
-    (Just (BList fileList)) <- return $ BD.lookup "files" infoDct
-    return $ fileList !! 0
+infoHash :: BTInfo -> BS8.ByteString
+infoHash btinfo = hashlazy $ encode btinfo
 
-getInfoDict = do
-    content <- BS.readFile "test.torrent"
-    dct <- return $ getBTDict content
-    (Just x) <- return $ BD.lookup "info" dct
-    return x
+totalSize :: BTMetainfo -> Int
+totalSize minfo = totalSize' 0 $ files . info $ minfo
+    where
+        totalSize' acc [] = acc
+        totalSize' acc (f:fs) = totalSize' (acc + filelen f) fs
 
-getDict = do
-    content <- BS.readFile "test.torrent"
-    dct <- return $ (decode content :: Result BValue)
-    return $ either error id dct
+trackers :: BTMetainfo -> [BS8.ByteString]
+trackers BTMetainfo {..} = announce:concat list
+    where list = fromMaybe [] announceList

@@ -5,16 +5,39 @@ module Tracker
     , BTTrackerRequest (..)
     , BTEvents (..)
     , NSBool (..)
+    , makeQueryString
+    , getTrackerRequest
     ) where
 
-import           Data.ByteString   (ByteString)
-import           Data.String       (IsString)
-import           Network.HTTP      (getRequest, simpleHTTP)
-import           Network.HTTP.Base (urlEncodeVars)
+import           Data.BEncode          (BEncode, decode)
+import qualified Data.ByteString.Char8 as BS8 (ByteString, pack, unpack)
+import           Metainfo              (BTMetainfo (..), infoHash, totalSize,
+                                        trackers)
+import           Network.HTTP          (getRequest, getResponseBody, simpleHTTP)
+import           Network.HTTP.Types    (renderSimpleQuery)
+
+data BTTrackerResponse =
+    BTTrackerResponseFailure
+    { failureReason :: BS8.ByteString } |
+    BTTrackerResponse
+    { warningMessage :: BS8.ByteString
+    , interval       :: Int
+    , minInterval    :: Int
+    , trackerId      :: Int
+    , complete       :: Int
+    , incomplete     :: Int
+    , peers          :: [Peer]
+    }
+    deriving (Show)
+
+--instance BEncode Data where
+--    func =
+
+newtype Peer = Peer { unPeer :: BS8.ByteString } deriving (Eq, Show)
 
 data BTTrackerRequest = BTTrackerRequest
-    { info_hash  :: ByteString
-    , peer_id    :: ByteString
+    { info_hash  :: BS8.ByteString
+    , peer_id    :: BS8.ByteString
     , port       :: Int
     , uploaded   :: Int
     , downloaded :: Int
@@ -35,19 +58,34 @@ instance Show BTEvents where
     show Stopped = "stopped"
     show Completed = "completed"
 
-requestQueryString :: BTTrackerRequest -> String
-requestQueryString BTTrackerRequest {..} = urlEncodeVars $
-    [ ("info_hash", show info_hash)
-    , ("peer_id", show peer_id)
-    , ("port", show port)
-    , ("uploaded", show uploaded)
-    , ("downloaded", show downloaded)
-    , ("left", show left)
-    , ("compact", show compact)
-    , ("no_peer_id", show no_peer_id)
-    , ("event", show event) ]
+type TrackerURL = String
+getTrackerRequest :: BTMetainfo -> BTTrackerRequest
+getTrackerRequest minfo@(BTMetainfo {..}) = BTTrackerRequest
+    { info_hash = infoHash info
+    , peer_id = "HT123456789012345678"           -- TODO: replace with UUID
+    , port = 6881
+    , uploaded = 0
+    , downloaded = 0
+    , left = totalSize minfo
+    , compact = NSBool True
+    , no_peer_id = NSBool True
+    , event = Started }
 
---makeRequest :: String -> BTTrackerRequest -> IO ( (b c))
-makeRequest url req = simpleHTTP request
+{- LOWER LEVEL IMPLEMENTATION -}
+
+makeQueryString :: BTTrackerRequest -> String
+makeQueryString BTTrackerRequest {..} = BS8.unpack $ renderSimpleQuery True $
+    [ ("info_hash", info_hash)
+    , ("peer_id", peer_id)
+    , ("left", castBS left) ]
     where
-        request = getRequest $ url ++ "?" ++ requestQueryString req
+        castBS :: (Show a) => a -> BS8.ByteString
+        castBS = BS8.pack . show
+
+--makeRequest :: BS8.ByteString -> BTTrackerRequest -> Either String BTTrackerResponse
+makeRequest url req = do
+    response <- simpleHTTP request
+    getResponseBody response
+    where
+        urlString = BS8.unpack url
+        request = getRequest $ urlString ++ makeQueryString req
