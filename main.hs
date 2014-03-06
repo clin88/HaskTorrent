@@ -5,9 +5,9 @@ import           Data.ByteString.Char8 (ByteString, unpack)
 import           Metainfo              (BTMetainfo (..), loadMetainfoFile,
                                         totalSize)
 import           System.Environment    (getArgs)
-import           Tracker               (BTEvents (..), BTTrackerRequest (..),
-                                        NSBool (..), getTrackerRequest,
-                                        makeQueryString, makeRequest)
+import           Tracker               (BTTrackerRequest (..),
+                                        getTrackerRequest,
+                                        makeRequest)
 
 
 getBTFileName :: IO String

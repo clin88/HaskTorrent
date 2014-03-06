@@ -1,39 +1,74 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE RecordWildCards            #-}
+{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 module Tracker
     ( makeRequest
     , BTTrackerRequest (..)
-    , BTEvents (..)
-    , NSBool (..)
-    , makeQueryString
     , getTrackerRequest
-    ) where
+    , BTTrackerResponse (..) ) where
 
-import           Data.BEncode          (BEncode, decode)
+import Data.Typeable (Typeable)
+import           Control.Applicative   ((<|>))
+import           Data.BEncode
 import qualified Data.ByteString.Char8 as BS8 (ByteString, pack, unpack)
+import qualified Data.ByteString as BS (unpack)
 import           Metainfo              (BTMetainfo (..), infoHash, totalSize,
                                         trackers)
 import           Network.HTTP          (getRequest, getResponseBody, simpleHTTP)
 import           Network.HTTP.Types    (renderSimpleQuery)
+import Data.Word (Word8, Word16)
 
+{- DATA TYPES -}
+
+-- Represents a response from the tracker when requesting announce.
 data BTTrackerResponse =
-    BTTrackerResponseFailure
+    BTTrackerFailure
     { failureReason :: BS8.ByteString } |
     BTTrackerResponse
-    { warningMessage :: BS8.ByteString
-    , interval       :: Int
-    , minInterval    :: Int
-    , trackerId      :: Int
-    , complete       :: Int
+    { complete       :: Int
     , incomplete     :: Int
-    , peers          :: [Peer]
-    }
-    deriving (Show)
+    , interval       :: Int
+    , minInterval    :: Maybe Int
+    , peers          :: Peers
+    , trackerId      :: Maybe Int
+    , warningMessage :: Maybe BS8.ByteString }
+    deriving (Show, Typeable)
 
---instance BEncode Data where
---    func =
+instance BEncode BTTrackerResponse where
+    toBEncode = error "Encoding for BTTrackerResult not implemented."
+    fromBEncode dct = failure dct <|> success dct
+        where
+            failure = fromDict $ BTTrackerFailure
+                <$>! "failure reason"
+            success = fromDict $ BTTrackerResponse
+                <$>! "complete"
+                <*>! "incomplete"
+                <*>! "interval"
+                <*>? "min interval"
+                <*>! "peers"
+                <*>? "tracker id"
+                <*>? "warning message"
 
-newtype Peer = Peer { unPeer :: BS8.ByteString } deriving (Eq, Show)
+data Peer = Peer
+    { pIp   :: [Word8]
+    , pPort :: [Word8] } deriving (Show)
+
+newtype Peers = Peers [Peer] deriving (Show)
+instance BEncode Peers where
+    toBEncode = error "Encoding of peer list not implemented."
+    fromBEncode val = do return $ getPeers val
+
+getPeers :: BValue -> Peers
+getPeers (BString bs) = Peers $ getPeers' $ BS.unpack bs
+
+getPeers' :: [Word8] -> [Peer]
+getPeers' [] = []
+getPeers' xs = Peer { pIp=ip, pPort=port }:getPeers' tail
+    where
+        (sixdigs, tail) = splitAt 6 xs
+        (ip, port) = splitAt 4 sixdigs
 
 data BTTrackerRequest = BTTrackerRequest
     { info_hash  :: BS8.ByteString
@@ -82,7 +117,7 @@ makeQueryString BTTrackerRequest {..} = BS8.unpack $ renderSimpleQuery True $
         castBS :: (Show a) => a -> BS8.ByteString
         castBS = BS8.pack . show
 
---makeRequest :: BS8.ByteString -> BTTrackerRequest -> Either String BTTrackerResponse
+makeRequest :: BS8.ByteString -> BTTrackerRequest -> IO String
 makeRequest url req = do
     response <- simpleHTTP request
     getResponseBody response
