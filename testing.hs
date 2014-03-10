@@ -1,15 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
-{-# LANGUAGE ViewPatterns #-}
-import           Control.Exception (IOException, handle, try)
-import           Control.Monad     (liftM)
-import           Crypto.Hash.SHA1  (hashlazy)
+import           Control.Concurrent.Async (mapConcurrently)
+import Data.Either (rights)
+import           Control.Exception        (IOException, try, throwIO)
+import           Control.Monad            (liftM)
+import           Crypto.Hash.SHA1         (hashlazy)
 import           Data.BEncode
-import qualified Data.ByteString   as BS
+import qualified Data.ByteString          as BS
+import           Data.List.Split
+import           Data.Word                (Word16, Word8)
 import           Metainfo
 import           Tracker
-import Data.List.Split
-import Data.Word (Word8, Word16)
 
 testMetainfo :: IO BTMetainfo
 testMetainfo = do
@@ -19,12 +20,12 @@ testMetainfo = do
 testTrackerRequest :: IO BTTrackerRequest
 testTrackerRequest = do
     Right minfo <- loadMetainfoFile "test.torrent"
-    return $ getTrackerRequest minfo
+    return $ makeRequestObject minfo
 
 testRequest url = do
     Right minfo <- loadMetainfoFile "test.torrent"
-    request <- return $ getTrackerRequest minfo
-    response <- makeRequest url request
+    request <- return $ makeRequestObject minfo
+    response <- makeRequest request url
     return response
 
 --tryAllUrls = do

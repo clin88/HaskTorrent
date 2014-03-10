@@ -13,7 +13,6 @@ module Metainfo where
 import           Control.Applicative   ((<$>), (<*>))
 import           Crypto.Hash.SHA1      (hashlazy)
 import           Data.BEncode          as BE
-import           Data.BEncode.BDict    as BD (BDictMap, lookup)
 import qualified Data.ByteString.Char8 as BS8 (ByteString, readFile)
 import           Data.Maybe            (fromMaybe)
 import           Data.Typeable         (Typeable)

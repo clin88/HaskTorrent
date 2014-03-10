@@ -1,27 +1,27 @@
+{-# LANGUAGE DeriveDataTypeable         #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecordWildCards            #-}
-{-# LANGUAGE FlexibleInstances          #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE ViewPatterns #-}
 
 module Tracker where
 --    ( makeRequest
 --    , BTTrackerRequest (..)
 --    , BTTrackerResponse (..)
---    , getTrackerRequest) where
+--    , makeRequestObject) where
 
-import Data.Typeable (Typeable)
 import           Control.Applicative   ((<|>))
+import Control.Exception (throwIO)
 import           Data.BEncode
+import qualified Data.ByteString       as BS (ByteString, unpack)
 import qualified Data.ByteString.Char8 as BS8 (pack, unpack)
-import qualified Data.ByteString as BS (ByteString, unpack)
+import           Data.List.Split       (chunksOf)
+import           Data.Typeable         (Typeable)
+import           Data.Word             (Word16, Word8)
 import           Metainfo              (BTMetainfo (..), infoHash, totalSize,
                                         trackers)
 import           Network.HTTP          (getRequest, getResponseBody, simpleHTTP)
 import           Network.HTTP.Types    (renderSimpleQuery)
-import Data.Word (Word8, Word16)
-import Data.List.Split (chunksOf)
 
 {- DATA TYPES -}
 
@@ -87,8 +87,29 @@ instance BEncode Peers where
 
 {- MAKE REQUEST -}
 
-getTrackerRequest :: BTMetainfo -> BTTrackerRequest
-getTrackerRequest minfo@(BTMetainfo {..}) = BTTrackerRequest
+-- Concurrently shoot a request to all trackers in a metainfo file.
+--
+-- TODO: Add timeouts to each request so it doesn't take forever for bad requests.
+announceAllTrackers :: BTMetainfo -> IO [BTTrackerResponse]
+announceAllTrackers minfo = do
+    results <- mapConcurrently safeRequest $ trackers minfo
+    return $ rights results
+    where
+        req = makeRequestObject minfo
+        safeRequest :: BS.ByteString -> IO (Either IOException BTTrackerResponse)
+        safeRequest = try . makeRequest req
+
+makeRequest :: BTTrackerRequest -> BS.ByteString -> IO BTTrackerResponse
+makeRequest req url = do
+    response <- simpleHTTP request
+    body <- fmap BS8.pack $ getResponseBody response
+    return $ either error id $ (decode body :: Result BTTrackerResponse)
+    where
+        urlString = BS8.unpack url
+        request = getRequest $ urlString ++ makeQueryString req
+
+makeRequestObject :: BTMetainfo -> BTTrackerRequest
+makeRequestObject minfo@(BTMetainfo {..}) = BTTrackerRequest
     { info_hash = infoHash info
     , peer_id = "HT123456789012345678"           -- TODO: replace with UUID
     , port = 6881
@@ -108,16 +129,8 @@ makeQueryString BTTrackerRequest {..} = BS8.unpack $ renderSimpleQuery True $
         castBS :: (Show a) => a -> BS.ByteString
         castBS = BS8.pack . show
 
-makeRequest :: BS.ByteString -> BTTrackerRequest -> IO String
-makeRequest url req = do
-    response <- simpleHTTP request
-    getResponseBody response
-    where
-        urlString = BS8.unpack url
-        request = getRequest $ urlString ++ makeQueryString req
 
 {- PARSE RESPONSE -}
-
 procPeerList :: BS.ByteString -> Peers
 procPeerList = Peers . map procPeer . chunksOf 6 . BS.unpack
 
