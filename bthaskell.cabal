@@ -26,7 +26,8 @@ executable bthaskell
     haskell-src,
     HTTP,
     cryptohash,
-    http-types
+    http-types,
+    split
 
   -- hs-source-dirs:
   default-language:    Haskell2010

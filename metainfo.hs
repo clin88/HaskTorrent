@@ -1,14 +1,14 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
-module Metainfo
-    ( loadMetainfoFile
-    , loadMetainfo
-    , BTMetainfo(..)
-    , totalSize
-    , infoHash
-    , trackers
-    ) where
+module Metainfo where
+--    ( loadMetainfoFile
+--    , loadMetainfo
+--    , BTMetainfo(..)
+--    , totalSize
+--    , infoHash
+--    , trackers
+--    ) where
 
 import           Control.Applicative   ((<$>), (<*>))
 import           Crypto.Hash.SHA1      (hashlazy)
