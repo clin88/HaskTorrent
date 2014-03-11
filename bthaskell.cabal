@@ -28,7 +28,8 @@ executable bthaskell
     cryptohash,
     http-types,
     split,
-    async
+    async,
+    network
 
   -- hs-source-dirs:
   default-language:    Haskell2010

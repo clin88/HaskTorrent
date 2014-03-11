@@ -10,18 +10,24 @@ module Tracker where
 --    , BTTrackerResponse (..)
 --    , makeRequestObject) where
 
-import           Control.Applicative   ((<|>))
-import Control.Exception (throwIO)
+import           Control.Applicative      ((<|>))
+import           Control.Concurrent.Async (mapConcurrently)
+import           Control.Exception        (IOException, try)
 import           Data.BEncode
-import qualified Data.ByteString       as BS (ByteString, unpack)
-import qualified Data.ByteString.Char8 as BS8 (pack, unpack)
-import           Data.List.Split       (chunksOf)
-import           Data.Typeable         (Typeable)
-import           Data.Word             (Word16, Word8)
-import           Metainfo              (BTMetainfo (..), infoHash, totalSize,
-                                        trackers)
-import           Network.HTTP          (getRequest, getResponseBody, simpleHTTP)
-import           Network.HTTP.Types    (renderSimpleQuery)
+import qualified Data.ByteString          as BS (ByteString, take, unpack)
+import qualified Data.ByteString.Char8    as BS8 (pack, unpack)
+import           Data.Either              (rights)
+import           Data.List                (intersperse)
+import           Data.List.Split          (chunksOf)
+import           Data.Typeable            (Typeable)
+import           Data.Word                (Word16, Word8)
+import           Metainfo                 (BTMetainfo (..), infoHash, totalSize,
+                                           trackers)
+import           Network                  (HostName, PortID (..),
+                                           PortNumber (..))
+import           Network.HTTP             (getRequest, getResponseBody,
+                                           simpleHTTP)
+import           Network.HTTP.Types       (renderSimpleQuery)
 
 {- DATA TYPES -}
 
@@ -77,10 +83,10 @@ instance BEncode BTTrackerResponse where
                 <*>? "warning message"
 
 data Peer = Peer
-    { peerIp   :: [Word8]
-    , peerPort :: Word16 } deriving (Show)
+    { peerIp   :: HostName
+    , peerPort :: PortID } deriving (Show)
 
-newtype Peers = Peers [Peer] deriving (Show)
+newtype Peers = Peers { unPeers :: [Peer] } deriving (Show)
 instance BEncode Peers where
     toBEncode = error "Encoding of peer list not implemented."
     fromBEncode (BString val) = do return $ procPeerList val
@@ -99,12 +105,16 @@ announceAllTrackers minfo = do
         safeRequest :: BS.ByteString -> IO (Either IOException BTTrackerResponse)
         safeRequest = try . makeRequest req
 
+-- TODO: Fix errors here to be catchable under one umbrella
 makeRequest :: BTTrackerRequest -> BS.ByteString -> IO BTTrackerResponse
-makeRequest req url = do
-    response <- simpleHTTP request
-    body <- fmap BS8.pack $ getResponseBody response
-    return $ either error id $ (decode body :: Result BTTrackerResponse)
+makeRequest req url
+    | urlHead /= "http" = fail "URL not HTTP."
+    | otherwise = do
+        response <- simpleHTTP request
+        body <- fmap BS8.pack $ getResponseBody response
+        return $ either error id $ (decode body :: Result BTTrackerResponse)
     where
+        urlHead = BS.take 4 url
         urlString = BS8.unpack url
         request = getRequest $ urlString ++ makeQueryString req
 
@@ -129,13 +139,17 @@ makeQueryString BTTrackerRequest {..} = BS8.unpack $ renderSimpleQuery True $
         castBS :: (Show a) => a -> BS.ByteString
         castBS = BS8.pack . show
 
-
 {- PARSE RESPONSE -}
+-- helper function to create return all peers from a list of responses
+extractAllPeers :: [BTTrackerResponse] -> [Peer]
+extractAllPeers = concatMap (unPeers . peers)
+
 procPeerList :: BS.ByteString -> Peers
 procPeerList = Peers . map procPeer . chunksOf 6 . BS.unpack
 
 procPeer :: [Word8] -> Peer
-procPeer rawPeer = Peer ip (x*256 + y)
+procPeer rawPeer = Peer host $ PortNumber (x*256 + y)
     where
         (ip, ports) = splitAt 4 rawPeer
-        (x:y:[]) = (map fromIntegral ports :: [Word16])
+        host = concat $ intersperse "." $ map show ip
+        (x:y:[]) = (map fromIntegral ports :: [PortNumber])
