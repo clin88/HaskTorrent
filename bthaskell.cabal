@@ -29,7 +29,8 @@ executable bthaskell
     http-types,
     split,
     async,
-    network
+    network,
+    binary
 
   -- hs-source-dirs:
   default-language:    Haskell2010

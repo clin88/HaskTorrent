@@ -28,6 +28,7 @@ import           Network                  (HostName, PortID (..),
 import           Network.HTTP             (getRequest, getResponseBody,
                                            simpleHTTP)
 import           Network.HTTP.Types       (renderSimpleQuery)
+import           Peers                    (Peer (..))
 
 {- DATA TYPES -}
 
@@ -62,7 +63,7 @@ data BTTrackerResponse =
     , incomplete     :: Int
     , interval       :: Int
     , minInterval    :: Maybe Int
-    , peers          :: Peers
+    , peers          :: PeerList
     , trackerId      :: Maybe Int
     , warningMessage :: Maybe BS.ByteString }
     deriving (Show, Typeable)
@@ -82,12 +83,9 @@ instance BEncode BTTrackerResponse where
                 <*>? "tracker id"
                 <*>? "warning message"
 
-data Peer = Peer
-    { peerIp   :: HostName
-    , peerPort :: PortID } deriving (Show)
 
-newtype Peers = Peers { unPeers :: [Peer] } deriving (Show)
-instance BEncode Peers where
+newtype PeerList = PeerList { unPeers :: [Peer] } deriving (Show)
+instance BEncode PeerList where
     toBEncode = error "Encoding of peer list not implemented."
     fromBEncode (BString val) = do return $ procPeerList val
 
@@ -112,7 +110,7 @@ makeRequest req url
     | otherwise = do
         response <- simpleHTTP request
         body <- fmap BS8.pack $ getResponseBody response
-        return $ either error id $ (decode body :: Result BTTrackerResponse)
+        return $ decodeResponse body
     where
         urlHead = BS.take 4 url
         urlString = BS8.unpack url
@@ -120,7 +118,7 @@ makeRequest req url
 
 makeRequestObject :: BTMetainfo -> BTTrackerRequest
 makeRequestObject minfo@(BTMetainfo {..}) = BTTrackerRequest
-    { info_hash = infoHash info
+    { info_hash = infoHash minfo
     , peer_id = "HT123456789012345678"           -- TODO: replace with UUID
     , port = 6881
     , uploaded = 0
@@ -139,13 +137,18 @@ makeQueryString BTTrackerRequest {..} = BS8.unpack $ renderSimpleQuery True $
         castBS :: (Show a) => a -> BS.ByteString
         castBS = BS8.pack . show
 
+
+
 {- PARSE RESPONSE -}
--- helper function to create return all peers from a list of responses
+decodeResponse :: BS.ByteString -> BTTrackerResponse
+decodeResponse = either error id . decode
+
+-- helper function to return all peers from a list of responses
 extractAllPeers :: [BTTrackerResponse] -> [Peer]
 extractAllPeers = concatMap (unPeers . peers)
 
-procPeerList :: BS.ByteString -> Peers
-procPeerList = Peers . map procPeer . chunksOf 6 . BS.unpack
+procPeerList :: BS.ByteString -> PeerList
+procPeerList = PeerList . map procPeer . chunksOf 6 . BS.unpack
 
 procPeer :: [Word8] -> Peer
 procPeer rawPeer = Peer host $ PortNumber (x*256 + y)

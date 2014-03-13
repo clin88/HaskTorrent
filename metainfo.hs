@@ -13,18 +13,19 @@ module Metainfo where
 import           Control.Applicative   ((<$>), (<*>))
 import           Crypto.Hash.SHA1      (hashlazy)
 import           Data.BEncode          as BE
-import qualified Data.ByteString.Char8 as BS8 (ByteString, readFile)
+import qualified Data.ByteString.Char8 as BS8 (readFile)
 import           Data.Maybe            (fromMaybe)
 import           Data.Typeable         (Typeable)
 import           Network.HTTP.Types    (urlEncode)
+import Data.ByteString (ByteString)
 
 data BTMetainfo = BTMetainfo
-    { announce     :: BS8.ByteString
-    , announceList :: Maybe [[BS8.ByteString]]
-    , comment      :: Maybe BS8.ByteString
-    , createdBy    :: Maybe BS8.ByteString
-    , creationDate :: Maybe BS8.ByteString
-    , encoding     :: Maybe BS8.ByteString
+    { announce     :: ByteString
+    , announceList :: Maybe [[ByteString]]
+    , comment      :: Maybe ByteString
+    , createdBy    :: Maybe ByteString
+    , creationDate :: Maybe ByteString
+    , encoding     :: Maybe ByteString
     , info         :: BTInfo } deriving (Typeable, Show)
 
 instance BEncode BTMetainfo where
@@ -47,33 +48,60 @@ instance BEncode BTMetainfo where
         <*>? "encoding"
         <*>! "info"
 
-data BTInfo = BTInfo
-    { files       :: [BTFileinfo]
-    , name        :: BS8.ByteString
-    , pieceLength :: Int
-    , pieces      :: BS8.ByteString
-    , private     :: Maybe Bool } deriving (Typeable, Show)
+data BTInfo =
+    BTSingleFileInfo
+    { sfFileLength :: Int
+    , sfMd5sum :: Maybe ByteString
+    , sfName :: ByteString
+    , sfPieceLength :: Int
+    , sfPieces :: ByteString
+    , sfPrivate :: Maybe Bool } |
+    BTMultiFileInfo
+    { mfFiles       :: [BTFileinfo]
+    , mfName        :: ByteString
+    , mfPieceLength :: Int
+    , mfPieces      :: ByteString
+    , mfPrivate     :: Maybe Bool } deriving (Typeable, Show)
 
 instance BEncode BTInfo where
-    toBEncode BTInfo {..} = toDict $
-        "files" .=! files .:
-        "name" .=! name .:
-        "piece length" .=! pieceLength .:
-        "pieces" .=! pieces .:
-        "private" .=? private .:
+    toBEncode BTSingleFileInfo {..} = toDict $
+        "length" .=! sfFileLength .:
+        "md5sum" .=? sfMd5sum .:
+        "name" .=!  sfName .:
+        "piece length" .=! sfPieceLength .:
+        "pieces" .=! sfPieces .:
+        "private" .=? sfPrivate .:
         endDict
 
-    fromBEncode = fromDict $ BTInfo
-        <$>! "files"
-        <*>! "name"
-        <*>! "piece length"
-        <*>! "pieces"
-        <*>? "private"
+    toBEncode BTMultiFileInfo {..} = toDict $
+        "files" .=! mfFiles .:
+        "name" .=! mfName .:
+        "piece length" .=! mfPieceLength .:
+        "pieces" .=! mfPieces .:
+        "private" .=? mfPrivate .:
+        endDict
+
+    fromBEncode = fromDict $ do
+        files <- opt "files"
+        case files of
+            Just _ -> BTMultiFileInfo
+                        <$>! "files"
+                        <*>! "name"
+                        <*>! "piece length"
+                        <*>! "pieces"
+                        <*>? "private"
+            Nothing -> BTSingleFileInfo
+                        <$>! "length"
+                        <*>? "md5sum"
+                        <*>! "name"
+                        <*>! "piece length"
+                        <*>! "pieces"
+                        <*>? "private"
 
 data BTFileinfo = BTFileinfo
     { filelen :: Int
-    , fMD5sum :: Maybe BS8.ByteString
-    , path    :: [BS8.ByteString] } deriving (Typeable, Show)
+    , fMD5sum :: Maybe ByteString
+    , path    :: [ByteString] } deriving (Typeable, Show)
 
 instance BEncode BTFileinfo where
     toBEncode BTFileinfo {..} = toDict $
@@ -90,20 +118,21 @@ instance BEncode BTFileinfo where
 loadMetainfoFile :: String -> IO (Result BTMetainfo)
 loadMetainfoFile fn = decode <$> BS8.readFile fn
 
-loadMetainfo :: BS8.ByteString -> Result BTMetainfo
+loadMetainfo :: ByteString -> Result BTMetainfo
 loadMetainfo = decode
 
 {- HELPER FUNCTIONS -}
-
-infoHash :: BTInfo -> BS8.ByteString
-infoHash btinfo = hashlazy $ encode btinfo
+infoHash :: BTMetainfo -> ByteString
+infoHash = hashlazy . encode . info
 
 totalSize :: BTMetainfo -> Int
-totalSize minfo = totalSize' 0 $ files . info $ minfo
+totalSize minfo = case info minfo of
+    BTSingleFileInfo {..} -> sfFileLength
+    BTMultiFileInfo {..} -> totalSize' 0 mfFiles
     where
         totalSize' acc [] = acc
         totalSize' acc (f:fs) = totalSize' (acc + filelen f) fs
 
-trackers :: BTMetainfo -> [BS8.ByteString]
+trackers :: BTMetainfo -> [ByteString]
 trackers BTMetainfo {..} = announce:concat list
     where list = fromMaybe [] announceList
