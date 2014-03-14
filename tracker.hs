@@ -5,16 +5,15 @@
 {-# LANGUAGE RecordWildCards            #-}
 
 module Tracker where
---    ( makeRequest
---    , BTTrackerRequest (..)
---    , BTTrackerResponse (..)
---    , makeRequestObject) where
+    --( makeRequest
+    --, BTTrackerResponse
+    --, makeRequestObject) where
 
-import           Control.Applicative      ((<|>))
 import           Control.Concurrent.Async (mapConcurrently)
 import           Control.Exception        (IOException, try)
 import           Data.BEncode
-import qualified Data.ByteString          as BS (ByteString, take, unpack)
+import Data.ByteString (ByteString)
+import qualified Data.ByteString          as BS (take, unpack, append)
 import qualified Data.ByteString.Char8    as BS8 (pack, unpack)
 import           Data.Either              (rights)
 import           Data.List                (intersperse)
@@ -28,13 +27,13 @@ import           Network                  (HostName, PortID (..),
 import           Network.HTTP             (getRequest, getResponseBody,
                                            simpleHTTP)
 import           Network.HTTP.Types       (renderSimpleQuery)
-import           Peers                    (Peer (..))
+import           Peers                    (PeerAddr (..))
 
 {- DATA TYPES -}
 
 data BTTrackerRequest = BTTrackerRequest
-    { info_hash  :: BS.ByteString
-    , peer_id    :: BS.ByteString
+    { info_hash  :: ByteString
+    , peer_id    :: ByteString
     , port       :: Int
     , uploaded   :: Int
     , downloaded :: Int
@@ -57,7 +56,7 @@ instance Show NSBool where
 -- Represents a response from the tracker when requesting announce.
 data BTTrackerResponse =
     BTTrackerFailure
-    { failureReason :: BS.ByteString } |
+    { failureReason :: ByteString } |
     BTTrackerResponse
     { complete       :: Int
     , incomplete     :: Int
@@ -65,12 +64,12 @@ data BTTrackerResponse =
     , minInterval    :: Maybe Int
     , peers          :: PeerList
     , trackerId      :: Maybe Int
-    , warningMessage :: Maybe BS.ByteString }
+    , warningMessage :: Maybe ByteString }
     deriving (Show, Typeable)
 
 instance BEncode BTTrackerResponse where
     toBEncode = error "Encoding for BTTrackerResult not implemented."
-    fromBEncode dct = failure dct <|> success dct
+    fromBEncode dct = success dct
         where
             failure = fromDict $ BTTrackerFailure
                 <$>! "failure reason"
@@ -84,7 +83,7 @@ instance BEncode BTTrackerResponse where
                 <*>? "warning message"
 
 
-newtype PeerList = PeerList { unPeers :: [Peer] } deriving (Show)
+newtype PeerList = PeerList { unPeers :: [PeerAddr] } deriving (Show)
 instance BEncode PeerList where
     toBEncode = error "Encoding of peer list not implemented."
     fromBEncode (BString val) = do return $ procPeerList val
@@ -100,11 +99,11 @@ announceAllTrackers minfo = do
     return $ rights results
     where
         req = makeRequestObject minfo
-        safeRequest :: BS.ByteString -> IO (Either IOException BTTrackerResponse)
+        safeRequest :: ByteString -> IO (Either IOException BTTrackerResponse)
         safeRequest = try . makeRequest req
 
 -- TODO: Fix errors here to be catchable under one umbrella
-makeRequest :: BTTrackerRequest -> BS.ByteString -> IO BTTrackerResponse
+makeRequest :: BTTrackerRequest -> ByteString -> IO BTTrackerResponse
 makeRequest req url
     | urlHead /= "http" = fail "URL not HTTP."
     | otherwise = do
@@ -115,9 +114,10 @@ makeRequest req url
         urlHead = BS.take 4 url
         urlString = BS8.unpack url
         request = getRequest $ urlString ++ makeQueryString req
+        decodeResponse = either error id . decode
 
 makeRequestObject :: BTMetainfo -> BTTrackerRequest
-makeRequestObject minfo@(BTMetainfo {..}) = BTTrackerRequest
+makeRequestObject minfo = BTTrackerRequest
     { info_hash = infoHash minfo
     , peer_id = "HT123456789012345678"           -- TODO: replace with UUID
     , port = 6881
@@ -134,24 +134,20 @@ makeQueryString BTTrackerRequest {..} = BS8.unpack $ renderSimpleQuery True $
     , ("peer_id", peer_id)
     , ("left", castBS left) ]
     where
-        castBS :: (Show a) => a -> BS.ByteString
+        castBS :: (Show a) => a -> ByteString
         castBS = BS8.pack . show
 
-
-
 {- PARSE RESPONSE -}
-decodeResponse :: BS.ByteString -> BTTrackerResponse
-decodeResponse = either error id . decode
 
 -- helper function to return all peers from a list of responses
-extractAllPeers :: [BTTrackerResponse] -> [Peer]
+extractAllPeers :: [BTTrackerResponse] -> [PeerAddr]
 extractAllPeers = concatMap (unPeers . peers)
 
-procPeerList :: BS.ByteString -> PeerList
+procPeerList :: ByteString -> PeerList
 procPeerList = PeerList . map procPeer . chunksOf 6 . BS.unpack
 
-procPeer :: [Word8] -> Peer
-procPeer rawPeer = Peer host $ PortNumber (x*256 + y)
+procPeer :: [Word8] -> PeerAddr
+procPeer rawPeer = PeerAddr host (PortNumber (x*256 + y)) Nothing
     where
         (ip, ports) = splitAt 4 rawPeer
         host = concat $ intersperse "." $ map show ip

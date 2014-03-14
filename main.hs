@@ -9,14 +9,12 @@ import           System.Environment (getArgs)
 import           Tracker            (BTTrackerRequest (..), makeRequestObject,
                                      makeRequest)
 
-
 getBTFileName :: IO String
 getBTFileName = do
     as <- getArgs
     case as of
         [] -> do print "Specify a bittorrent file please!"; fail "No BT file."
         (x:_) -> return x
-
 
 --main = do
 --    fname <- getBTFileName

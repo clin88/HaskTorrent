@@ -1,23 +1,22 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
-module Metainfo where
---    ( loadMetainfoFile
---    , loadMetainfo
---    , BTMetainfo(..)
---    , totalSize
---    , infoHash
---    , trackers
---    ) where
+module Metainfo
+    ( loadMetainfoFile
+    , loadMetainfo
+    , BTMetainfo
+    , totalSize
+    , infoHash
+    , trackers
+    ) where
 
 import           Control.Applicative   ((<$>), (<*>))
 import           Crypto.Hash.SHA1      (hashlazy)
 import           Data.BEncode          as BE
-import qualified Data.ByteString.Char8 as BS8 (readFile)
+import  Data.ByteString.Char8 as BS8 (readFile, ByteString)
 import           Data.Maybe            (fromMaybe)
 import           Data.Typeable         (Typeable)
 import           Network.HTTP.Types    (urlEncode)
-import Data.ByteString (ByteString)
 
 data BTMetainfo = BTMetainfo
     { announce     :: ByteString
@@ -82,7 +81,7 @@ instance BEncode BTInfo where
         endDict
 
     fromBEncode = fromDict $ do
-        files <- opt "files"
+        files <- lookAhead $ opt "files"
         case files of
             Just _ -> BTMultiFileInfo
                         <$>! "files"
