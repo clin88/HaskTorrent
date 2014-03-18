@@ -6,7 +6,9 @@ module PeerMsgs
     , PeerMessage(..)
     , PeerRequest(..)
     , encodeMsg
-    , decodeMsg )
+    , decodeMsg
+    , encodeHandshake
+    , decodeHandshake )
     where
 
 import           Control.Applicative        ((<$>), (<*>))
