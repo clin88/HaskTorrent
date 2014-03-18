@@ -59,4 +59,11 @@ testUgh = do
     peers <- testGetAllPeers
     testConnectToPeers minfo peers
 
+divByGeneric :: (Monad m, Integral a) => a -> [a] -> m [a]
+divByGeneric _ [] = return []
+divByGeneric _ (0:_) = fail "division by zero in divByGeneric"
+divByGeneric numerator (denom:xs) =
+    do next <- divByGeneric numerator xs
+       return ((numerator `div` denom) : next)
+
 myPeerId = "HT123456789012345678"
