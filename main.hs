@@ -9,6 +9,9 @@ import           System.Environment (getArgs)
 import           Tracker            (BTTrackerRequest (..), makeRequestObject,
                                      makeRequest)
 
+main :: IO ()
+main = print "chen"
+
 getBTFileName :: IO String
 getBTFileName = do
     as <- getArgs
