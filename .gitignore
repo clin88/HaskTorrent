@@ -1,2 +1,5 @@
 .idea
 cabal.sandbox.config
+dist/
+learning/
+.Setup.hs.swp
