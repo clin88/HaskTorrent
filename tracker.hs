@@ -10,20 +10,19 @@ module Tracker where
     --, makeRequestObject) where
 
 import           Control.Concurrent.Async (mapConcurrently)
-import           Control.Exception        (IOException, try, catch, ErrorCall)
+import           Control.Exception        (IOException, try)
 import           Data.BEncode as BE
 import Data.ByteString (ByteString)
-import qualified Data.ByteString          as BS (take, unpack, append)
+import qualified Data.ByteString          as BS (take, unpack)
 import qualified Data.ByteString.Char8    as BS8 (pack, unpack)
 import           Data.Either              (rights)
 import           Data.List                (intersperse)
 import           Data.List.Split          (chunksOf)
 import           Data.Typeable            (Typeable)
-import           Data.Word                (Word16, Word8)
-import           Metainfo                 (BTMetainfo (..), infoHash, totalSize,
+import           Data.Word                (Word8)
+import           Metainfo                 (BTMetainfo, infoHash, totalSize,
                                            trackers)
-import           Network                  (HostName, PortID (..),
-                                           PortNumber (..))
+import           Network                  (PortID (..), PortNumber)
 import           Network.HTTP             (getRequest, getResponseBody,
                                            simpleHTTP)
 import           Network.HTTP.Types       (renderSimpleQuery)
@@ -87,6 +86,7 @@ newtype PeerList = PeerList { unPeers :: [PeerAddr] } deriving (Show)
 instance BEncode PeerList where
     toBEncode = error "Encoding of peer list not implemented."
     fromBEncode (BString val) = do return $ procPeerList val
+    fromBEncode (BDict _) = error "Decode for dictionary formatted peer not implemented."
 
 {- MAKE REQUEST -}
 

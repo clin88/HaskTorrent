@@ -2,21 +2,21 @@
 {-# LANGUAGE OverloadedStrings  #-}
 {-# LANGUAGE RecordWildCards    #-}
 module Metainfo
-    ( loadMetainfoFile
-    , loadMetainfo
-    , BTMetainfo
-    , totalSize
-    , infoHash
-    , trackers
-    ) where
+    --( loadMetainfoFile
+    --, loadMetainfo
+    --, BTMetainfo
+    --, totalSize
+    --, infoHash
+    --, trackers
+    --) where
+where
 
-import           Control.Applicative   ((<$>), (<*>))
+import           Control.Applicative   ((<$>))
 import           Crypto.Hash.SHA1      (hashlazy)
 import           Data.BEncode          as BE
 import  Data.ByteString.Char8 as BS8 (readFile, ByteString)
 import           Data.Maybe            (fromMaybe)
 import           Data.Typeable         (Typeable)
-import           Network.HTTP.Types    (urlEncode)
 
 data BTMetainfo = BTMetainfo
     { announce     :: ByteString
