@@ -36,6 +36,11 @@ data PieceSt = Claimed
              | Unclaimed
              deriving (Show)
 
+isUnclaimed :: PieceSt -> Bool
+isUnclaimed Unclaimed = True
+isUnclaimed _         = False
+
+type PeerPieces = Seq Bool
 type PiecesMap = IntMap PieceSt
 type PieceID = Int
 
@@ -44,7 +49,7 @@ data Peer = Peer
     , pAmInterested :: Bool
     , pChokingMe    :: Bool
     , pInterestedMe :: Bool
-    , pHasPieces    :: Seq Bool
+    , pHasPieces    :: PeerPieces
     , pHaveMapGlob  :: PiecesMap
     , pReqsFrom     :: Seq PeerRequest
     , pReqsTo       :: Seq PeerRequest
@@ -108,20 +113,29 @@ sendHaves peer glHaves handle = do
         diff d@Downloaded Unclaimed = return d
         diff _ _ = Nothing
 
---gaugeInterest :: TVar Peer -> TVar PiecesMap -> Handle -> STM (IO ())
---gaugeInterest peer glHaves handle = do
---    Peer {pAmInterested = pAmInterested} <- readTVar peer
---    let newInterest |
---    case pAmInterested of
---        and  ->
---    pHaveMapGlob <- readTVar glHaves
---    case
+gaugeInterest :: TVar Peer -> TVar PiecesMap -> Handle -> STM (IO ())
+gaugeInterest tPeer tPieces handle = do
+    peer <- readTVar tPeer
+    pieces <- readTVar tPieces
+    let wantPieces = interestedIn pieces (pHasPieces peer)
+    case (pAmInterested peer, IS.null wantPieces) of
+        (False, True) -> updatePeer $ \p -> p {pAmInterested = True}
+        (True, False) -> updatePeer $ \p -> p {pAmInterested = False}
+        _             -> retry
+    where
+        updatePeer = return . atomically . modifyTVar tPeer
 
---determineInterest :: PiecesMap -> Seq Bool -> IntSet Int
---determineInterest
---    where
---        sPiecesMap = S.
---        sPeerPieces =
+-- decide what unclaimed pieces we could download from this peer
+interestedIn :: PiecesMap -> PeerPieces -> IntSet
+interestedIn pieces peerPieces = IS.intersection theyhave idonthave
+    where
+        theyhave :: IntSet
+        theyhave = let cmb :: IntSet -> PieceID -> Bool -> IntSet
+                       cmb accum ind True = IS.insert ind accum
+                       cmb accum _   False = accum
+                   in Seq.foldlWithIndex cmb IS.empty peerPieces
+        idonthave :: IntSet
+        idonthave = IS.fromList . IM.keys . IM.filter isUnclaimed $ pieces
 
 -- Listens to incoming messages and changes state/responds to message.
 peerListener :: TVar Peer -> Handle -> IO ()
