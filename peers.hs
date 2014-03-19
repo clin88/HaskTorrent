@@ -19,8 +19,8 @@ import           Data.Maybe             (fromMaybe)
 import           Data.Monoid            ((<>))
 import           Data.Sequence          (Seq, (|>))
 import qualified Data.Sequence          as Seq
-import           Data.Set               (Set)
-import qualified Data.Set               as S
+import           Data.IntSet               (IntSet)
+import qualified Data.IntSet               as IS
 import           Data.Word
 import           Network                (HostName, PortID (..), connectTo)
 import           PeerMsgs
@@ -44,11 +44,12 @@ data Peer = Peer
     , pAmInterested :: Bool
     , pChokingMe    :: Bool
     , pInterestedMe :: Bool
-    , pHasPieces    :: Set Int
+    , pHasPieces    :: Seq Bool
     , pHaveMapGlob  :: PiecesMap
     , pReqsFrom     :: Seq PeerRequest
     , pReqsTo       :: Seq PeerRequest
     } deriving (Show)
+    -- TODO: Need last send time, last receive time,
 
 defaultPeer :: PiecesMap -> Peer
 defaultPeer globalhasmap = Peer
@@ -56,7 +57,7 @@ defaultPeer globalhasmap = Peer
     , pAmInterested = False
     , pChokingMe = True
     , pInterestedMe = False
-    , pHasPieces = S.empty
+    , pHasPieces = Seq.empty
     , pHaveMapGlob  = globalhasmap
     , pReqsFrom = Seq.empty
     , pReqsTo = Seq.empty }
@@ -71,8 +72,8 @@ sendMsg to msg = do
     B.hPut to $ encodeMsg msg
 
 peerController :: TVar Peer -> TVar PiecesMap -> Handle -> IO ()
-peerController peer glHaves handle = forever . join . atomically $
-    sendHaves peer glHaves handle
+peerController peer glHaves handle = do forever . join . atomically
+    $  sendHaves peer glHaves handle
     -- make a request
     -- if not choked
     -- and they're interested
@@ -107,6 +108,21 @@ sendHaves peer glHaves handle = do
         diff d@Downloaded Unclaimed = return d
         diff _ _ = Nothing
 
+--gaugeInterest :: TVar Peer -> TVar PiecesMap -> Handle -> STM (IO ())
+--gaugeInterest peer glHaves handle = do
+--    Peer {pAmInterested = pAmInterested} <- readTVar peer
+--    let newInterest |
+--    case pAmInterested of
+--        and  ->
+--    pHaveMapGlob <- readTVar glHaves
+--    case
+
+--determineInterest :: PiecesMap -> Seq Bool -> IntSet Int
+--determineInterest
+--    where
+--        sPiecesMap = S.
+--        sPeerPieces =
+
 -- Listens to incoming messages and changes state/responds to message.
 peerListener :: TVar Peer -> Handle -> IO ()
 peerListener peer handle = forever $ do
@@ -120,7 +136,7 @@ peerListener peer handle = forever $ do
         Uninterested     -> updatePeer (\p -> p { pInterestedMe = False })
         -- TODO: add gain interest test code here
         Bitfield ps      -> updatePeer (\p -> p { pHasPieces = ps })
-        Have ind         -> updatePeer (\p@(Peer {..}) -> p { pHasPieces = S.insert ind pHasPieces })
+        Have ind         -> updatePeer (\p@(Peer {..}) -> p { pHasPieces = Seq.update ind True pHasPieces })
         Request req      -> updatePeer (\p@(Peer {..}) -> p { pReqsFrom = pReqsFrom |> req } )
         -- TODO: Handle piece adding.
         piece@Piece {..} -> print piece
@@ -129,10 +145,10 @@ peerListener peer handle = forever $ do
     where
         updatePeer = atomically . modifyTVar peer
         getMsg = do
-            len <- L.hGet handle 4
-            let intLen = fromIntegral (BIN.decode len :: Word32)
-            msg <- L.hGet handle intLen
-            return . decodeMsg . L.toStrict $ len <> msg
+            len <- B.hGet handle 4
+            let intLen = fromIntegral (BIN.decode $ L.fromStrict len :: Word32)
+            msg <- B.hGet handle intLen
+            return . decodeMsg $ len <> msg
 
 -- Connects to peer and launches peer threads. Does not close handle automatically,
 -- so operation should be bracketed.
@@ -151,7 +167,7 @@ handshakeFromPeer :: Handle -> IO Handshake
 handshakeFromPeer handle = do
     pstrlen <- L.hGet handle 1
     let intPstrlen = fromIntegral $ L.head pstrlen
-    peerhs <- L.hGet handle $ intPstrlen + 49
+    peerhs <- L.hGet handle $ intPstrlen + 48
     return . decodeHandshake . L.toStrict $ pstrlen <> peerhs
 
 validateHandshake :: Handshake -> ByteString -> ByteString -> Either String ()

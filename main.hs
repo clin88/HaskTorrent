@@ -1,28 +1,23 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
-import Text.Printf (printf)
-import Data.IntMap.Strict (IntMap)
-import           Control.Monad      (liftM)
-import           Crypto.Hash.SHA1   (hashlazy)
-import qualified Data.ByteString    as BS (ByteString, unpack, take)
-import Data.ByteString (ByteString)
-import           Metainfo           (BTMetainfo (..), loadMetainfoFile,
-                                     totalSize)
-import           System.Environment (getArgs)
-import           Tracker            (BTTrackerRequest (..), makeRequestObject,
-                                     makeRequest)
-import Peers
-import Control.Exception (bracket)
-import Control.Concurrent
-import Control.Concurrent.Async (race_)
-import Control.Concurrent.STM
-import Network (connectTo)
-import System.IO
-import Tracker
-import Metainfo
-import Control.Applicative
-import Control.Monad
-import qualified Data.IntMap as IM
+import           Control.Applicative
+import           Control.Concurrent
+import           Control.Concurrent.Async (race_)
+import           Control.Concurrent.STM
+import           Control.Exception        (bracket)
+import           Control.Monad
+import           Crypto.Hash.SHA1         (hashlazy)
+import           Data.ByteString          (ByteString)
+import qualified Data.ByteString          as BS (ByteString, take, unpack)
+import qualified Data.IntMap              as IM
+import           Data.IntMap.Strict       (IntMap)
+import           Metainfo
+import           Network                  (connectTo)
+import           Peers
+import           System.Environment       (getArgs)
+import           System.IO
+import           Text.Printf              (printf)
+import           Tracker
 
 peerid :: ByteString
 peerid = BS.take 20 "Many were increasingly of the opinion that they'd all made a big mistake"
@@ -31,6 +26,7 @@ launchPeer :: ByteString -> PeerAddr -> TVar PiecesMap -> IO (ThreadId, TVar Pee
 launchPeer infohash pa@(PeerAddr {..}) tGlPieces = do
     glPieces <- readTVarIO tGlPieces
     peer <- newTVarIO $ defaultPeer glPieces
+    -- TODO: bracket doesn't call close if open crashes
     let open = do
             printf "OPENING: %s\n" (show pa)
             handle <- connectTo peerHost peerPort
@@ -45,8 +41,10 @@ launchPeer infohash pa@(PeerAddr {..}) tGlPieces = do
             race_ (peerController peer tGlPieces handle)
                   (peerListener peer handle)
         close h = do
+            -- TODO: Ensure claims are relinquished.
             printf "CLOSE: %s\n" (show pa)
             hClose h
+    -- nested bracket: inner handshake -> claim; outer handles socket
     tid <- forkFinally (bracket open close action) $ \_ -> do
         printf "FINISHED: %s\n" (show pa)
     return (tid, peer)
@@ -75,7 +73,6 @@ main = do
         launchPeer infohash p tGlPieces
     forever $ do
         threadDelay $ round 5e6
-        printf "so ronery\n"
     -- Right (url, request) <- return $ liftM getTrackerRequest eMetainfo
     -- return ()
 

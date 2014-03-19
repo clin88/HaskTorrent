@@ -11,17 +11,18 @@ module PeerMsgs
     , decodeHandshake )
     where
 
+import qualified Data.Bits as Bits
 import           Control.Applicative        ((<$>), (<*>))
 import           Data.Binary                (Binary, decode, encode, get, put)
-import qualified Data.Binary                as BIN
+import qualified Data.Binary                as Bin
 import           Data.Binary.Get
 import           Data.Binary.Put
 import           Data.ByteString            (ByteString)
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy       as L
 import qualified Data.ByteString.Lazy.Char8 as L8
-import           Data.Set                   (Set)
-import qualified Data.Set                   as S
+import qualified Data.Sequence as Seq
+import Data.Sequence (Seq)
 import           Data.Word
 import           Network
 
@@ -65,7 +66,7 @@ data PeerMessage =
     | Interested
     | Uninterested
     | Have Int
-    | Bitfield (Set Int)
+    | Bitfield (Seq Bool)
     | Request PeerRequest
     | Piece
         { pieceIndex :: Int
@@ -86,7 +87,7 @@ instance Binary PeerMessage where
             Just 2  -> return Interested
             Just 3  -> return Uninterested
             Just 4  -> Have <$> getNum32
-            -- Just 5  -> Bitfield S.empty -- <$> (getByteString $ len - 1)
+            Just 5  -> Bitfield <$> (decodeBitField <$> (getByteString $ len - 1))
             Just 6  -> Request <$> (PeerRequest <$> getNum32 <*> getNum32 <*> getNum32)
             Just 7  -> Piece <$> getNum32 <*> getNum32 <*> (getByteString $ len - 9)
             Just 8  -> Cancel <$> (PeerRequest <$> getNum32 <*> getNum32 <*> getNum32)
@@ -95,7 +96,7 @@ instance Binary PeerMessage where
             getId = do
                 empty <- isEmpty
                 if empty then return Nothing
-                         else getWord8 >>= return . Just
+                         else Just <$> getWord8
             getNum32 = fromIntegral <$> (get :: Get Word32)
 
     put KeepAlive = putWord32 0
@@ -104,7 +105,11 @@ instance Binary PeerMessage where
     put Interested = putWord32 1 >> putWord8 2
     put Uninterested = putWord32 1 >> putWord8 3
     put (Have index) = putWord32 5 >> putWord8 4 >> putWord32 index
-    put (Bitfield bf) = putWord8 0
+    put (Bitfield bf) = do
+        let blen = ceiling $ fromIntegral (Seq.length bf) / 8
+        putWord32 $ blen + 1
+        putWord8 5
+        putByteString $ encodeBitField bf
     put (Request (PeerRequest {..})) = do
         putWord32 13
         putWord8 6
@@ -128,17 +133,31 @@ instance Binary PeerMessage where
         putWord8 9
         put (fromIntegral port :: Word16)
 
+encodeBitField :: Seq Bool -> ByteString
+encodeBitField = B.pack . reverse . Seq.foldlWithIndex combine []
+
+combine xs ind bool = case bitind of
+    0 -> bbit 0 : xs
+    _ -> bbit (head xs) : tail xs
+    where
+        bitind = ind `mod` 8
+        bbit word | bool = Bits.setBit word bitind
+                  | otherwise = word
+
+decodeBitField :: ByteString -> Seq Bool
+decodeBitField f = Seq.fromList $ Bits.testBit <$> B.unpack f <*> [0..7]
+
 putWord32 :: Integral a => a -> Put
 putWord32 = put . (fromIntegral :: Integral a => a -> Word32)
 
 encodeMsg :: PeerMessage -> ByteString
-encodeMsg = L.toStrict . BIN.encode
+encodeMsg = L.toStrict . Bin.encode
 
 decodeMsg :: ByteString -> PeerMessage
-decodeMsg = BIN.decode . L.fromStrict
+decodeMsg = Bin.decode . L.fromStrict
 
 encodeHandshake :: Handshake -> ByteString
-encodeHandshake = L.toStrict . BIN.encode
+encodeHandshake = L.toStrict . Bin.encode
 
 decodeHandshake :: ByteString -> Handshake
-decodeHandshake = BIN.decode . L.fromStrict
+decodeHandshake = Bin.decode . L.fromStrict

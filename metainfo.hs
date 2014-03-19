@@ -47,8 +47,7 @@ instance BEncode BTMetainfo where
         <*>? "encoding"
         <*>! "info"
 
-data BTInfo =
-    BTSingleFileInfo
+data BTInfo = BTSingleFileInfo
     { sfFileLength :: Int
     , sfMd5sum :: Maybe ByteString
     , sfName :: ByteString
