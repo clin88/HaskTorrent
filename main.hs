@@ -4,7 +4,7 @@ import           Control.Applicative
 import           Control.Concurrent
 import           Control.Concurrent.Async (race_)
 import           Control.Concurrent.STM
-import           Control.Exception        (bracket)
+import           Control.Exception        (bracket, finally)
 import           Control.Monad
 import           Crypto.Hash.SHA1         (hashlazy)
 import           Data.ByteString          (ByteString)
@@ -22,32 +22,45 @@ import           Tracker
 peerid :: ByteString
 peerid = BS.take 20 "Many were increasingly of the opinion that they'd all made a big mistake"
 
+logger :: PeerAddr -> String -> IO ()
+logger pa msg = printf "(%s) %s \n" (peerHost $ pa) msg
+
 launchPeer :: ByteString -> PeerAddr -> TVar PiecesMap -> IO (ThreadId, TVar Peer)
-launchPeer infohash pa@(PeerAddr {..}) tGlPieces = do
-    glPieces <- readTVarIO tGlPieces
-    peer <- newTVarIO $ defaultPeer glPieces
-    -- TODO: bracket doesn't call close if open crashes
-    let open = do
-            printf "OPENING: %s\n" (show pa)
-            handle <- connectTo peerHost peerPort
-            hSetBinaryMode handle True
+launchPeer infohash pa@(PeerAddr {..}) tPieces = do
+    pieces <- readTVarIO tPieces
+    tPeer <- newTVarIO $ defaultPeer pieces -- snapshot of global state for which to diff with
+    tid <- forkFinally (go tPeer) $ \ee -> case ee of
+        Left e   -> logger pa (printf "thread crashed: %s" $ show e)
+        Right () -> logger pa "thread finished"
+    return (tid, tPeer)
+    where
+        -- bracket to protect socket
+        go :: TVar Peer -> IO ()
+        go tPeer = bracket (      do logger pa "connectTo"; connectTo peerHost peerPort)
+                           (\h -> do logger pa "hClose"   ; hClose h)
+                           (gogo tPeer)
+        -- initialize friendship; finally mop up
+        gogo :: TVar Peer -> Handle -> IO ()
+        gogo tPeer h = do
+            hSetBinaryMode h True
+            logger pa "peerHandshake"
+            peerHandshake h infohash peerid peerTrackerId
             -- TODO: Better exception handling here.
-            printf "HANDSHAKING: %s\n" (show pa)
-            peerHandshake handle infohash peerid peerTrackerId
-            printf "DAIJOUBU: %s\n" (show pa)
-            return handle
-        action handle = do
             -- TODO: also send our bitfield
-            race_ (peerController peer tGlPieces handle)
-                  (peerListener peer handle)
-        close h = do
-            -- TODO: Ensure claims are relinquished.
-            printf "CLOSE: %s\n" (show pa)
-            hClose h
-    -- nested bracket: inner handshake -> claim; outer handles socket
-    tid <- forkFinally (bracket open close action) $ \_ -> do
-        printf "FINISHED: %s\n" (show pa)
-    return (tid, peer)
+            finally (gogogo tPeer h)
+                    (mopup pa tPeer)
+        -- launch the two sub threads
+        gogogo :: TVar Peer -> Handle -> IO ()
+        gogogo tPeer h = do
+            logger pa "DaiJouBu"
+            race_ (peerController tPeer tPieces h)
+                  (peerListener tPeer h)
+
+-- relinquish stale claims
+mopup :: PeerAddr -> TVar Peer -> IO ()
+mopup pa tPeer = do
+    logger pa "TODO: relinquish claims"
+    return ()
 
 getBTFileName :: IO String
 getBTFileName = do

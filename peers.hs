@@ -77,8 +77,9 @@ sendMsg to msg = do
     B.hPut to $ encodeMsg msg
 
 peerController :: TVar Peer -> TVar PiecesMap -> Handle -> IO ()
-peerController peer glHaves handle = do forever . join . atomically
-    $  sendHaves peer glHaves handle
+peerController tPeer tPieces handle = do forever . join . atomically
+           $ sendHaves tPeer tPieces handle
+    `orElse` gaugeInterest tPeer tPieces handle 
     -- make a request
     -- if not choked
     -- and they're interested
