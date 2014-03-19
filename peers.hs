@@ -119,11 +119,15 @@ gaugeInterest tPeer tPieces handle = do
     pieces <- readTVar tPieces
     let wantPieces = interestedIn pieces (pHasPieces peer)
     case (pAmInterested peer, IS.null wantPieces) of
-        (False, True) -> updatePeer $ \p -> p {pAmInterested = True}
-        (True, False) -> updatePeer $ \p -> p {pAmInterested = False}
+        (False, True) -> updatePeer True
+        (True, False) -> updatePeer False
         _             -> retry
     where
-        updatePeer = return . atomically . modifyTVar tPeer
+        updatePeer :: Bool -> STM (IO ())
+        updatePeer b = return $ do
+            atomically . modifyTVar tPeer $ \p -> p {pAmInterested = b}
+            sendMsg handle $ if b then Interested
+                                  else Uninterested
 
 -- decide what unclaimed pieces we could download from this peer
 interestedIn :: PiecesMap -> PeerPieces -> IntSet
