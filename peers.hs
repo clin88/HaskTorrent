@@ -9,6 +9,7 @@ where
 import Text.Printf (printf)
 import           Control.Concurrent.STM
 import           Control.Monad          (forM_, forever, join)
+import Control.Applicative ((<|>))
 import qualified Data.Binary            as BIN
 import           Data.ByteString        (ByteString)
 import qualified Data.ByteString        as B
@@ -19,12 +20,15 @@ import           Data.Maybe             (fromMaybe)
 import           Data.Monoid            ((<>))
 import           Data.Sequence          (Seq, (|>))
 import qualified Data.Sequence          as Seq
-import           Data.IntSet               (IntSet)
+import           Data.IntSet               (IntSet, (\\))
 import qualified Data.IntSet               as IS
+import Data.Set (Set)
+import qualified Data.Set as S
 import           Data.Word
 import           Network                (HostName, PortID (..), connectTo)
 import           PeerMsgs
 import           System.IO              (Handle, hSetBinaryMode)
+import BTUtils
 
 data PeerAddr = PeerAddr
     { peerHost      :: HostName
@@ -35,10 +39,6 @@ data PieceSt = Claimed
              | Downloaded
              | Unclaimed
              deriving (Show)
-
-isUnclaimed :: PieceSt -> Bool
-isUnclaimed Unclaimed = True
-isUnclaimed _         = False
 
 type PeerPieces = Seq Bool
 type PiecesMap = IntMap PieceSt
@@ -51,25 +51,29 @@ data Peer = Peer
     , pInterestedMe :: Bool
     , pHasPieces    :: PeerPieces
     , pHaveMapGlob  :: PiecesMap
-    , pReqsFrom     :: Seq PeerRequest
-    , pReqsTo       :: Seq PeerRequest
+    , pReqsFrom     :: Seq Block
+    , pReqsTo       :: Seq Block
+    , pCurPiece     :: CurPiece
     } deriving (Show)
     -- TODO: Need last send time, last receive time,
 
+data CurPiece = NoPiece
+              | CurPiece
+              { cpIndex  :: Int
+              , cpBlocks :: Set Block
+              } deriving (Eq, Show)
+
 defaultPeer :: PiecesMap -> Peer
-defaultPeer globalhasmap = Peer
+defaultPeer glPieces = Peer
     { pAmChoking = True
     , pAmInterested = False
     , pChokingMe = True
     , pInterestedMe = False
     , pHasPieces = Seq.empty
-    , pHaveMapGlob  = globalhasmap
+    , pHaveMapGlob  = glPieces
     , pReqsFrom = Seq.empty
-    , pReqsTo = Seq.empty }
-
--- note to self:
---  Interest is updated at two points-when a new piece comes in (may lose interest)
---  or when new bitfield or have information comes in (may gain interest)
+    , pReqsTo = Seq.empty
+    , pCurPiece = NoPiece }
 
 sendMsg :: Handle -> PeerMessage -> IO ()
 sendMsg to msg = do
@@ -78,8 +82,8 @@ sendMsg to msg = do
 
 peerController :: TVar Peer -> TVar PiecesMap -> Handle -> IO ()
 peerController tPeer tPieces handle = do forever . join . atomically
-           $ sendHaves tPeer tPieces handle
-    `orElse` gaugeInterest tPeer tPieces handle 
+    $   sendHaves tPeer tPieces handle
+    <|> manageInterest tPeer tPieces handle
     -- make a request
     -- if not choked
     -- and they're interested
@@ -114,37 +118,44 @@ sendHaves peer glHaves handle = do
         diff d@Downloaded Unclaimed = return d
         diff _ _ = Nothing
 
-gaugeInterest :: TVar Peer -> TVar PiecesMap -> Handle -> STM (IO ())
-gaugeInterest tPeer tPieces handle = do
+-- if peer has piece we want, gain interest.
+-- if peer has no piece we want, lose interest.
+manageInterest :: TVar Peer -> TVar PiecesMap -> Handle -> STM (IO ())
+manageInterest tPeer tPieces handle = do
     peer <- readTVar tPeer
     pieces <- readTVar tPieces
-    let wantPieces = interestedIn pieces (pHasPieces peer)
-    case (pAmInterested peer, IS.null wantPieces) of
-        (False, True) -> updatePeer True
-        (True, False) -> updatePeer False
-        _             -> retry
+    let notInterested = IS.null $ interestedIn pieces (pHasPieces peer)
+    case (pAmInterested peer, notInterested) of
+        (False, False) -> return $ updatePeer True     -- Not interested now, am interested.
+        (True, True)   -> return $ updatePeer False    -- Interested now, not interested.
+        _              -> retry
     where
-        updatePeer :: Bool -> STM (IO ())
-        updatePeer b = return $ do
+        updatePeer :: Bool -> IO ()
+        updatePeer b = do
             atomically . modifyTVar tPeer $ \p -> p {pAmInterested = b}
             sendMsg handle $ if b then Interested
                                   else Uninterested
 
 -- decide what unclaimed pieces we could download from this peer
 interestedIn :: PiecesMap -> PeerPieces -> IntSet
-interestedIn pieces peerPieces = IS.intersection theyhave idonthave
+interestedIn pieces peerPieces = theyhave \\ ihave
     where
         theyhave :: IntSet
         theyhave = let cmb :: IntSet -> PieceID -> Bool -> IntSet
                        cmb accum ind True = IS.insert ind accum
                        cmb accum _   False = accum
                    in Seq.foldlWithIndex cmb IS.empty peerPieces
-        idonthave :: IntSet
-        idonthave = IS.fromList . IM.keys . IM.filter isUnclaimed $ pieces
+
+        ihave :: IntSet
+        ihave = IS.fromList . IM.keys . IM.filter isDownloaded $ pieces
+
+        isDownloaded :: PieceSt -> Bool
+        isDownloaded Downloaded = True
+        isDownloaded _          = False
 
 -- Listens to incoming messages and changes state/responds to message.
 peerListener :: TVar Peer -> Handle -> IO ()
-peerListener peer handle = forever $ do
+peerListener tPeer handle = forever $ do
     msg <- getMsg
     printf "LISTENER: %s\n" (show msg)
     case msg of
@@ -153,24 +164,31 @@ peerListener peer handle = forever $ do
         Unchoke          -> updatePeer (\p -> p { pChokingMe = False })
         Interested       -> updatePeer (\p -> p { pInterestedMe = True })
         Uninterested     -> updatePeer (\p -> p { pInterestedMe = False })
-        -- TODO: add gain interest test code here
         Bitfield ps      -> updatePeer (\p -> p { pHasPieces = ps })
         Have ind         -> updatePeer (\p@(Peer {..}) -> p { pHasPieces = Seq.update ind True pHasPieces })
         Request req      -> updatePeer (\p@(Peer {..}) -> p { pReqsFrom = pReqsFrom |> req } )
-        -- TODO: Handle piece adding.
-        piece@Piece {..} -> print piece
-        Cancel req       -> updatePeer (\p@(Peer {..}) -> p { pReqsFrom = Seq.filter (req /=) pReqsFrom })
+        piece@Piece {..} -> updatePiece piece
+        Cancel req       -> do
+            let filterReqsFrom p@(Peer {..}) = p { pReqsFrom = Seq.filter (req /=) pReqsFrom }
+            updatePeer filterReqsFrom
         Port p           -> return ()
     where
-        updatePeer = atomically . modifyTVar peer
+        updatePiece Piece {..} = do
+            let req = Block { reqIndex = pieceIndex
+                            , reqBegin = pieceBegin
+                            , reqLength = B.length pieceBlock }
+                filterReqsTo p@(Peer {..}) = p { pReqsTo = Seq.filter (req /=) pReqsTo }
+                                                -- TODO: remove block from curpiece at request time, replace if request expires and not downloaded.
+            updatePeer filterReqsTo
+        updatePeer = atomically . modifyTVar tPeer
         getMsg = do
             len <- B.hGet handle 4
             let intLen = fromIntegral (BIN.decode $ L.fromStrict len :: Word32)
             msg <- B.hGet handle intLen
             return . decodeMsg $ len <> msg
 
--- Connects to peer and launches peer threads. Does not close handle automatically,
--- so operation should be bracketed.
+{- HANDSHAKE FUNCTIONS -}
+
 peerHandshake :: Handle -> ByteString -> ByteString -> Maybe ByteString -> IO ()
 peerHandshake handle infohash peerid trackerid = do
     handshakeToPeer handle $ formHandshake infohash peerid

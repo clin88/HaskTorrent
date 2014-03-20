@@ -4,7 +4,7 @@ module PeerMsgs
     ( Handshake(..)
     , formHandshake
     , PeerMessage(..)
-    , PeerRequest(..)
+    , Block(..)
     , encodeMsg
     , decodeMsg
     , encodeHandshake
@@ -54,7 +54,7 @@ instance Binary Handshake where
 formHandshake :: ByteString -> ByteString -> Handshake
 formHandshake infohash peerid = Handshake "BitTorrent protocol" 0 infohash peerid
 
-data PeerRequest = PeerRequest
+data Block = Block
     { reqIndex  :: Int
     , reqBegin  :: Int
     , reqLength :: Int } deriving (Show, Eq)
@@ -67,12 +67,12 @@ data PeerMessage =
     | Uninterested
     | Have Int
     | Bitfield (Seq Bool)
-    | Request PeerRequest
+    | Request Block
     | Piece
         { pieceIndex :: Int
         , pieceBegin :: Int
         , pieceBlock :: ByteString }
-    | Cancel PeerRequest
+    | Cancel Block
     | Port { portPort :: PortID } deriving (Show, Eq)
 
 -- TODO: Parse bitfield.
@@ -88,9 +88,9 @@ instance Binary PeerMessage where
             Just 3  -> return Uninterested
             Just 4  -> Have <$> getNum32
             Just 5  -> Bitfield <$> (decodeBitField <$> (getByteString $ len - 1))
-            Just 6  -> Request <$> (PeerRequest <$> getNum32 <*> getNum32 <*> getNum32)
+            Just 6  -> Request <$> (Block <$> getNum32 <*> getNum32 <*> getNum32)
             Just 7  -> Piece <$> getNum32 <*> getNum32 <*> (getByteString $ len - 9)
-            Just 8  -> Cancel <$> (PeerRequest <$> getNum32 <*> getNum32 <*> getNum32)
+            Just 8  -> Cancel <$> (Block <$> getNum32 <*> getNum32 <*> getNum32)
             Just 9  -> Port <$> PortNumber . fromIntegral <$> (get :: Get Word16)
         where
             getId = do
@@ -110,7 +110,7 @@ instance Binary PeerMessage where
         putWord32 $ blen + 1
         putWord8 5
         putByteString $ encodeBitField bf
-    put (Request (PeerRequest {..})) = do
+    put (Request (Block {..})) = do
         putWord32 13
         putWord8 6
         putWord32 reqIndex
@@ -122,7 +122,7 @@ instance Binary PeerMessage where
         putWord32 pieceIndex
         putWord32 pieceBegin
         putByteString pieceBlock
-    put (Cancel (PeerRequest {..})) = do
+    put (Cancel (Block {..})) = do
         putWord32 13
         putWord8 8
         putWord32 reqIndex
