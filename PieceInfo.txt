@@ -1,0 +1,51 @@
+
+# you have a file about 177 megabytes with pieces that are 10 mb each
+# create a PieceInfo for the file
+
+> let pinf = pieceInfo 123456789 (2^20)
+> pinf
+PieceInfo {piFileSize = 123456789, piPieceSize = 1048576, piLastPieceSize = 773397, piPieceCount = 118}
+
+# now you can query about pieces to get their offset & length
+
+> pidBlock pinf (-1)
+Nothing
+> pidBlock pinf (0)
+Just (0,1048576)
+> pidBlock pinf (1)
+Just (1048576,1048576)
+> pidBlock pinf (2)
+Just (2097152,1048576)
+
+> pidBlock pinf (116)
+Just (121634816,1048576)
+> pidBlock pinf (117)
+Just (122683392,773397)
+> pidBlock pinf (118)
+Nothing
+
+# if you want to claim a piece for downloading, you can get the block info from that piece
+# here’s the block info for piece 2 and the uneven piece, 117
+
+> pidBlockInfo pinf 2
+Just (BlockInfo (PieceInfo {piFileSize = 1048576, piPieceSize = 16384, piLastPieceSize = 16384, piPieceCount = 64}))
+> let Just binf = pidBlockInfo pinf 117
+> binf
+BlockInfo (PieceInfo {piFileSize = 773397, piPieceSize = 16384, piLastPieceSize = 3349, piPieceCount = 48})
+
+# now query for block info
+
+> bidBlock binf (-1)
+Nothing
+> bidBlock binf (0)
+Just (0,16384)
+> bidBlock binf (1)
+Just (16384,16384)
+> bidBlock binf (2)
+Just (32768,16384)
+> bidBlock binf (46)
+Just (753664,16384)
+> bidBlock binf (47)
+Just (770048,3349)
+> bidBlock binf (48)
+Nothing
