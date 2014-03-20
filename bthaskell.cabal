@@ -33,7 +33,8 @@ executable bthaskell
     binary,
     monads-tf,
     containers,
-    stm
+    stm,
+    time
 
   -- hs-source-dirs:
   default-language:    Haskell2010

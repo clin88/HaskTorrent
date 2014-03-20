@@ -9,7 +9,6 @@ where
 import Text.Printf (printf)
 import           Control.Concurrent.STM
 import           Control.Monad          (forM_, forever, join)
-import Control.Applicative ((<|>))
 import qualified Data.Binary            as BIN
 import           Data.ByteString        (ByteString)
 import qualified Data.ByteString        as B
@@ -28,6 +27,8 @@ import           Data.Word
 import           Network                (HostName, PortID (..), connectTo)
 import           PeerMsgs
 import           System.IO              (Handle, hSetBinaryMode)
+import qualified Data.Time.Clock as Clock
+import Data.Time.Clock (UTCTime, NominalDiffTime, diffUTCTime)
 import BTUtils
 
 data PeerAddr = PeerAddr
@@ -52,9 +53,9 @@ data Peer = Peer
     , pHasPieces    :: PeerPieces
     , pHaveMapGlob  :: PiecesMap
     , pReqsFrom     :: Seq Block
-    , pReqsTo       :: Seq Block
+    , pReqsTo       :: Seq (UTCTime, Block)
     , pCurPiece     :: CurPiece
-    } deriving (Show)
+    }
     -- TODO: Need last send time, last receive time,
 
 data CurPiece = NoPiece
@@ -81,9 +82,14 @@ sendMsg to msg = do
     B.hPut to $ encodeMsg msg
 
 peerController :: TVar Peer -> TVar PiecesMap -> Handle -> IO ()
-peerController tPeer tPieces handle = do forever . join . atomically
-    $   sendHaves tPeer tPieces handle
-    <|> manageInterest tPeer tPieces handle
+peerController tPeer tPieces handle = forever $ do
+    currTime <- Clock.getCurrentTime
+    join . atomically $        sendHaves tPeer tPieces handle
+                      `orElse` manageInterest tPeer tPieces handle
+                      `orElse` reqCleanup tPeer currTime reqExpirationTime
+    where
+        reqExpirationTime :: NominalDiffTime
+        reqExpirationTime = realToFrac 90
     -- make a request
     -- if not choked
     -- and they're interested
@@ -99,7 +105,8 @@ peerController tPeer tPieces handle = do forever . join . atomically
     --    if pending requests < 5 and interested, send request            -- can we guarantee we'll never be interested when there's nothing we need?bou
 
 
--- peerController actions
+{- PEERCONTROLLER ACTIONS -}
+
 sendHaves :: TVar Peer -> TVar PiecesMap -> Handle -> STM (IO ())
 sendHaves peer glHaves handle = do
     Peer {..} <- readTVar peer
@@ -145,13 +152,21 @@ interestedIn pieces peerPieces = theyhave \\ ihave
                        cmb accum ind True = IS.insert ind accum
                        cmb accum _   False = accum
                    in Seq.foldlWithIndex cmb IS.empty peerPieces
-
         ihave :: IntSet
         ihave = IS.fromList . IM.keys . IM.filter isDownloaded $ pieces
-
         isDownloaded :: PieceSt -> Bool
         isDownloaded Downloaded = True
         isDownloaded _          = False
+
+reqCleanup :: TVar Peer -> UTCTime -> NominalDiffTime -> STM(IO ())
+reqCleanup tPeer currTime expTime = do
+    peer@Peer {..} <- readTVar tPeer
+    let isFresh (reqTime, _) = currTime `diffUTCTime` reqTime < expTime
+        cleanedUpReqs = Seq.filter isFresh pReqsTo
+    -- if pieces have been cleaned up, commit the change. Otherwise move on to next STM.
+    case cleanedUpReqs /= pReqsTo of
+        True  -> return . atomically $ modifyTVar tPeer (\p -> p { pReqsTo = cleanedUpReqs })
+        False -> retry
 
 -- Listens to incoming messages and changes state/responds to message.
 peerListener :: TVar Peer -> Handle -> IO ()
@@ -174,11 +189,12 @@ peerListener tPeer handle = forever $ do
         Port p           -> return ()
     where
         updatePiece Piece {..} = do
-            let req = Block { reqIndex = pieceIndex
-                            , reqBegin = pieceBegin
-                            , reqLength = B.length pieceBlock }
-                filterReqsTo p@(Peer {..}) = p { pReqsTo = Seq.filter (req /=) pReqsTo }
-                                                -- TODO: remove block from curpiece at request time, replace if request expires and not downloaded.
+            let recBlock = Block { reqIndex  = pieceIndex
+                                 , reqBegin  = pieceBegin
+                                 , reqLength = B.length pieceBlock }
+                isDifferentBlock (_, reqBlock) = reqBlock /= recBlock
+                filterReqsTo p@(Peer {..})   = p { pReqsTo = Seq.filter isDifferentBlock pReqsTo }
+                                             -- TODO: remove block from curpiece at request time, replace if request expires and not downloaded.
             updatePeer filterReqsTo
         updatePeer = atomically . modifyTVar tPeer
         getMsg = do
