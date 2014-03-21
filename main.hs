@@ -19,6 +19,8 @@ import           System.Environment       (getArgs)
 import           System.IO
 import           Text.Printf              (printf)
 import           Tracker
+import Data.Sequence (Seq, (|>))
+import qualified Data.Sequence as Seq
 
 peerid :: ByteString
 peerid = BS.take 20 "Many were increasingly of the opinion that they'd all made a big mistake"
@@ -30,11 +32,11 @@ getBTFileName = do
         [] -> do print "Specify a bittorrent file please!"; fail "No BT file."
         (x:_) -> return x
 
-launchPeer :: ByteString -> TVar PiecesMap -> PeerAddr -> IO (ThreadId, TVar Peer)
+launchPeer :: ByteString -> TVar GlobalPieces -> PeerAddr -> IO (ThreadId, TVar Peer)
 launchPeer infohash tPieces pa@(PeerAddr {..}) = do
     pieces <- readTVarIO tPieces
     tPeer <- newTVarIO $ defaultPeer pieces -- snapshot of global state for which to diff with
-    tid <- forkFinally (connect tPeer) $ \ee -> case ee of
+    tid <- forkFinally (connect tPeer) $ \e -> case e of
         Left e   -> logger peerHost (printf "thread crashed: %s" $ show e)
         Right () -> logger peerHost "thread finished"
     return (tid, tPeer)
@@ -66,25 +68,32 @@ launchPeer infohash tPieces pa@(PeerAddr {..}) = do
             logger peerHost "TODO: relinquish claims"
             return ()
 
+buildFilePieces :: Int -> BTFileinfo -> Seq PieceInfo
+buildFilePieces plen (BTFileinfo {..}) =
+    case extra of
+        0 -> front
+        _ -> front |> PieceInfo extra Unclaimed
+    where
+        front = Seq.replicate wholepieces piece
+        (wholepieces, extra) = filelen `divMod` plen
+        piece = PieceInfo plen Unclaimed
+
 main = do
     fname <- getBTFileName
-    Right minfo <- loadMetainfoFile fname
+    minfo@BTMetainfo {..} <- loadMetainfoFile fname
+
+    let infohash    = infoHash minfo
+        BTInfo {..} = info
+        pieces      = msum $ buildFilePieces btiPiecelength <$> btiFiles
+
     peers <- extractAllPeers <$> announceAllTrackers minfo
-    printf "PEERS: %s..\n" (take 50 $ show peers)
-    let (BTSingleFileInfo {..}) = info minfo
-        infohash = infoHash minfo
-        pieces = fmap (const Unclaimed)
-               . IM.fromList
-               . zip [0..]
-               $ [0,sfPieceLength..sfFileLength] -- one extra
-    printf "PIECES: %s..\n" (take 50 $ show pieces)
-    tGlPieces <- newTVarIO pieces
-    forM_ peers $ launchPeer infohash tGlPieces
+    tPieces <- newTVarIO pieces
+    forM_ peers $ launchPeer infohash tPieces
+
+    printf "PEERS: %s\n" (show peers)
+
     forever $ do
         threadDelay $ round 5e6
-        glPieces <- readTVarIO tGlPieces
-        print glPieces
-    -- Right (url, request) <- return $ liftM getTrackerRequest eMetainfo
-    -- return ()
-
-
+        --pieces <- readTVarIO tPieces
+        --printf "PIECES: %s..\n" (take 50 $ show pieces)
+    return ()

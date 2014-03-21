@@ -218,11 +218,12 @@ claimPiece _ _ _ _ = retry
 -- Initialize map for new pieces
 newPiece :: PieceID -> GlobalPieces -> PieceInfo -> Seq BlockInfo
 newPiece pieceid pieces (PieceInfo {..}) =
-    fmap blockinfo (Seq.fromList [0..wholeblocks - 1]) ><
-        if extra == 0 then Seq.empty                        -- no extra block
-                      else Seq.singleton endblockinfo       -- extra "leftover" block
+    case extra of
+        0 -> front
+        _ -> front |> endblockinfo
     where
         (wholeblocks, extra) = pinfoLength `divMod` 16384
+        front = fmap blockinfo (Seq.fromList [0..wholeblocks - 1])
 
         blockinfo n = BlockInfo
             { binfoBlock  = Block pieceid (16384*n) 16384

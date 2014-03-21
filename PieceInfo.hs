@@ -11,7 +11,7 @@ module PieceInfo
 , pidSize
 , pidOffset
 , pidBlock
-, pidBlockInfo 
+, pidBlockInfo
 -- Piece blocks
 , BlockID
 , BlockSize, blockSize
