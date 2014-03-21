@@ -11,19 +11,21 @@ module PeerMsgs
     , decodeHandshake )
     where
 
-import qualified Data.Bits as Bits
-import           Control.Applicative        ((<$>), (<*>))
 import           Data.Binary                (Binary, decode, encode, get, put)
-import qualified Data.Binary                as Bin
+import           Data.ByteString            (ByteString)
 import           Data.Binary.Get
 import           Data.Binary.Put
-import           Data.ByteString            (ByteString)
+import           Data.Sequence              (Seq)
+import           Data.Word
+
+import qualified Data.Binary                as Bin
+import qualified Data.Bits                  as Bits
 import qualified Data.ByteString            as B
 import qualified Data.ByteString.Lazy       as L
-import qualified Data.ByteString.Lazy.Char8 as L8
 import qualified Data.Sequence as Seq
-import Data.Sequence (Seq)
-import           Data.Word
+
+import           Control.Applicative        ((<$>), (<*>))
+
 import           Network
 
 data Handshake = Handshake
@@ -57,7 +59,7 @@ formHandshake infohash peerid = Handshake "BitTorrent protocol" 0 infohash peeri
 data Block = Block
     { reqIndex  :: Int
     , reqBegin  :: Int
-    , reqLength :: Int } deriving (Show, Eq)
+    , reqLength :: Int } deriving (Show, Eq, Ord)
 
 data PeerMessage =
       KeepAlive
@@ -68,14 +70,13 @@ data PeerMessage =
     | Have Int
     | Bitfield (Seq Bool)
     | Request Block
-    | Piece
-        { pieceIndex :: Int
-        , pieceBegin :: Int
-        , pieceBlock :: ByteString }
+    | BlockMsg
+        { blockIndex :: Int
+        , blockBegin :: Int
+        , blockContent :: ByteString }
     | Cancel Block
     | Port { portPort :: PortID } deriving (Show, Eq)
 
--- TODO: Parse bitfield.
 instance Binary PeerMessage where
     get = do
         len <- getNum32
@@ -89,7 +90,7 @@ instance Binary PeerMessage where
             Just 4  -> Have <$> getNum32
             Just 5  -> Bitfield <$> (decodeBitField <$> (getByteString $ len - 1))
             Just 6  -> Request <$> (Block <$> getNum32 <*> getNum32 <*> getNum32)
-            Just 7  -> Piece <$> getNum32 <*> getNum32 <*> (getByteString $ len - 9)
+            Just 7  -> BlockMsg <$> getNum32 <*> getNum32 <*> (getByteString $ len - 9)
             Just 8  -> Cancel <$> (Block <$> getNum32 <*> getNum32 <*> getNum32)
             Just 9  -> Port <$> PortNumber . fromIntegral <$> (get :: Get Word16)
         where
@@ -116,12 +117,12 @@ instance Binary PeerMessage where
         putWord32 reqIndex
         putWord32 reqBegin
         putWord32 reqLength
-    put Piece {..} = do
-        putWord32 $ 9 + B.length pieceBlock
+    put BlockMsg {..} = do
+        putWord32 $ 9 + B.length blockContent
         putWord8 7
-        putWord32 pieceIndex
-        putWord32 pieceBegin
-        putByteString pieceBlock
+        putWord32 blockIndex
+        putWord32 blockBegin
+        putByteString blockContent
     put (Cancel (Block {..})) = do
         putWord32 13
         putWord8 8
@@ -133,22 +134,25 @@ instance Binary PeerMessage where
         putWord8 9
         put (fromIntegral port :: Word16)
 
+{- SUPPORT FUNCTIONS -}
+
 encodeBitField :: Seq Bool -> ByteString
 encodeBitField = B.pack . reverse . Seq.foldlWithIndex combine []
-
-combine xs ind bool = case bitind of
-    0 -> bbit 0 : xs
-    _ -> bbit (head xs) : tail xs
     where
-        bitind = ind `mod` 8
-        bbit word | bool = Bits.setBit word bitind
-                  | otherwise = word
+        combine xs ind bool =
+            let bitind = ind `mod` 8
+                bbit word = if bool then Bits.setBit word bitind
+                                    else word
+            in  case bitind of 0 -> bbit 0 : xs
+                               _ -> bbit (head xs) : tail xs
 
 decodeBitField :: ByteString -> Seq Bool
 decodeBitField f = Seq.fromList $ Bits.testBit <$> B.unpack f <*> [0..7]
 
 putWord32 :: Integral a => a -> Put
 putWord32 = put . (fromIntegral :: Integral a => a -> Word32)
+
+{- EXPORT FUNCTIONS -}
 
 encodeMsg :: PeerMessage -> ByteString
 encodeMsg = L.toStrict . Bin.encode
