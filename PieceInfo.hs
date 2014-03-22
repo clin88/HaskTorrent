@@ -5,7 +5,7 @@ module PieceInfo
 , PieceID
 , PieceSize
 , PieceCount
-, PieceInfo(), pieceInfo
+, PieceInfo(..), pieceInfo
 , pidInRange
 , pidIsLast
 , pidSize
@@ -16,7 +16,7 @@ module PieceInfo
 , BlockID
 , BlockSize, blockSize
 , PieceOffset
-, BlockInfo(), blockInfo
+, BlockInfo(..), blockInfo
 , bidBlock
 ) where
 
