@@ -262,7 +262,7 @@ peerListener tPeer handle = forever $ do
             msg <- B.hGet handle intLen
             return . decodeMsg $ len <> msg
 
--- TODO: remove block from curpiece at request time, replace if request expires and not downloaded.
+-- TODO: remove block from curpiece at requ infoest time, replace if request expires and not downloaded.
 -- get block, saves block
 updatePiece :: PeerMessage -> TVar Peer -> IO ()
 updatePiece (BlockMsg {..}) tPeer = atomically $ modifyTVar tPeer updateState

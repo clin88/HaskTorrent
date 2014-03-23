@@ -80,11 +80,12 @@ buildFilePieces plen (BTFileinfo {..}) =
 
 main = do
     fname <- getBTFileName
-    minfo@BTMetainfo {..} <- loadMetainfoFile fname
+    Right minfo@BTMetainfo {..} <- loadMetainfoFile fname
 
-    let infohash    = infoHash minfo
-        BTInfo {..} = info
-        pieces      = msum $ buildFilePieces btiPiecelength <$> btiFiles
+    let infohash = infoHash minfo
+        pieces   = case info of
+            BTSingleFileInfo {..} -> msum $ buildFilePieces sfPieceLength <$> [BTFileinfo sfFileLength sfMd5sum [sfName]]
+            BTMultiFileInfo  {..} -> msum $ buildFilePieces mfPieceLength <$> mfFiles
 
     peers <- extractAllPeers <$> announceAllTrackers minfo
     tPieces <- newTVarIO pieces
