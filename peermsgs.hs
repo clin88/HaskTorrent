@@ -37,9 +37,9 @@ data Handshake = Handshake
 instance Binary Handshake where
     get = do
         pstrlen <- get :: Get Word8
-        protid <- getByteString (fromIntegral pstrlen)
+        protid  <- getByteString (fromIntegral pstrlen)
         pparams <- get :: Get Word64
-        infoh <- getByteString 20
+        infoh   <- getByteString 20
         peerid  <- getByteString 20
         return $ Handshake protid pparams infoh peerid
 
@@ -87,12 +87,12 @@ instance Binary PeerMessage where
             Just 1  -> return Unchoke
             Just 2  -> return Interested
             Just 3  -> return Uninterested
-            Just 4  -> Have <$> getNum32
+            Just 4  -> Have     <$> getNum32
             Just 5  -> Bitfield <$> (decodeBitField <$> (getByteString $ len - 1))
-            Just 6  -> Request <$> (Block <$> getNum32 <*> getNum32 <*> getNum32)
+            Just 6  -> Request  <$> (Block <$> getNum32 <*> getNum32 <*> getNum32)
             Just 7  -> BlockMsg <$> getNum32 <*> getNum32 <*> (getByteString $ len - 9)
-            Just 8  -> Cancel <$> (Block <$> getNum32 <*> getNum32 <*> getNum32)
-            Just 9  -> Port <$> PortNumber . fromIntegral <$> (get :: Get Word16)
+            Just 8  -> Cancel   <$> (Block <$> getNum32 <*> getNum32 <*> getNum32)
+            Just 9  -> Port     <$> PortNumber . fromIntegral <$> (get :: Get Word16)
         where
             getId = do
                 empty <- isEmpty
@@ -100,12 +100,12 @@ instance Binary PeerMessage where
                          else Just <$> getWord8
             getNum32 = fromIntegral <$> (get :: Get Word32)
 
-    put KeepAlive = putWord32 0
-    put Choke = putWord32 1 >> putWord8 0
-    put Unchoke = putWord32 1 >> putWord8 1
-    put Interested = putWord32 1 >> putWord8 2
-    put Uninterested = putWord32 1 >> putWord8 3
-    put (Have index) = putWord32 5 >> putWord8 4 >> putWord32 index
+    put KeepAlive     = putWord32 0
+    put Choke         = putWord32 1 >> putWord8 0
+    put Unchoke       = putWord32 1 >> putWord8 1
+    put Interested    = putWord32 1 >> putWord8 2
+    put Uninterested  = putWord32 1 >> putWord8 3
+    put (Have index)  = putWord32 5 >> putWord8 4 >> putWord32 index
     put (Bitfield bf) = do
         let blen = ceiling $ fromIntegral (Seq.length bf) / 8
         putWord32 $ blen + 1

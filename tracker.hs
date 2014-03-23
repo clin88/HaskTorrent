@@ -9,6 +9,7 @@ module Tracker where
     --, BTTrackerResponse
     --, makeRequestObject) where
 
+import Control.Applicative ((<|>))
 import           Control.Concurrent.Async (mapConcurrently)
 import           Control.Exception        (IOException, try)
 import           Data.BEncode as BE
@@ -68,7 +69,7 @@ data BTTrackerResponse =
 
 instance BEncode BTTrackerResponse where
     toBEncode = error "Encoding for BTTrackerResult not implemented."
-    fromBEncode dct = success dct
+    fromBEncode dct = failure dct <|> success dct
         where
             failure = fromDict $ BTTrackerFailure
                 <$>! "failure reason"
@@ -80,7 +81,6 @@ instance BEncode BTTrackerResponse where
                 <*>! "peers"
                 <*>? "tracker id"
                 <*>? "warning message"
-
 
 newtype PeerList = PeerList { unPeers :: [PeerAddr] } deriving (Show)
 instance BEncode PeerList where

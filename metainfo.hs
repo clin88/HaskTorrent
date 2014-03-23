@@ -11,10 +11,11 @@ module Metainfo
     --) where
 where
 
-import           Control.Applicative   ((<$>))
+import           Control.Applicative   ((<$>), (<*>))
 import           Crypto.Hash.SHA1      (hashlazy)
 import           Data.BEncode          as BE
-import  Data.ByteString.Char8 as BS8 (readFile, ByteString)
+import Data.ByteString.Char8 as BS8 (readFile, ByteString)
+import qualified Data.ByteString as B
 import           Data.Maybe            (fromMaybe)
 import           Data.Typeable         (Typeable)
 
@@ -96,6 +97,13 @@ instance BEncode BTInfo where
                         <*>! "pieces"
                         <*>? "private"
 
+getPieces :: ByteString -> [ByteString]
+getPieces bs = chunk [] $ B.splitAt n bs
+    where
+        n = 20
+        chunk acc (piece, "")     = acc
+        chunk acc (piece, remain) = chunk (piece:acc) $ B.splitAt n remain
+
 data BTFileinfo = BTFileinfo
     { filelen :: Int
     , fMD5sum :: Maybe ByteString
@@ -105,7 +113,7 @@ instance BEncode BTFileinfo where
     toBEncode BTFileinfo {..} = toDict $
         "length" .=! filelen .:
         "md5sum" .=? fMD5sum .:
-        "path"   .=! path .:
+        "path"   .=! path    .:
         endDict
 
     fromBEncode = fromDict $ BTFileinfo
@@ -134,3 +142,4 @@ totalSize minfo = case info minfo of
 trackers :: BTMetainfo -> [ByteString]
 trackers BTMetainfo {..} = announce:concat list
     where list = fromMaybe [] announceList
+

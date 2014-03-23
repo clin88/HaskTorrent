@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
+import Debug.Trace
 import           BTUtils
 import           Control.Applicative
 import           Control.Concurrent
