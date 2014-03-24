@@ -1,183 +1,359 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE RecordWildCards   #-}
+{-# LANGUAGE ViewPatterns #-}
 module Peers
     --( PeerAddr (..)
     --, Peer
     --, connectToPeer)
 where
 
-import Control.Exception (handle, IOException)
-import Control.Applicative ((<$>), (<*>))
-import Data.Either (rights)
-import Data.Maybe (fromMaybe)
-import Control.Exception (try)
-import Control.Concurrent.Async (mapConcurrently)
-import Data.Binary (Binary, get, put, decode, encode)
-import qualified Data.Binary                as BIN
-import           Data.Binary.Get
-import           Data.Binary.Put
-import           Data.ByteString            (ByteString)
-import qualified Data.ByteString            as B
-import qualified Data.ByteString.Lazy       as L
-import qualified Data.ByteString.Lazy.Char8 as L8
-import           Data.Word
-import           Network
-import           System.IO
-import Network (PortNumber (..))
+import Prelude hiding (or)
+import Debug.Trace
 
-data PeerAddr = PeerAddr
-    { paIp   :: HostName
-    , paPort :: PortID
-    , paId :: Maybe ByteString } deriving (Show)
+import Text.Printf            (printf)
+import Control.Concurrent.STM
+import Control.Monad          (forM_, forever, join)
+import Control.Applicative    ((<$>), (<*>))
+import Data.ByteString        (ByteString)
+import Data.IntMap.Strict     (IntMap)
+import Data.Maybe             (fromMaybe, catMaybes)
+import Data.Monoid            ((<>))
+import Data.Sequence          (Seq, (|>), (><))
+import Data.Set               (Set)
+import Data.IntSet            (IntSet, (\\))
+import Data.Word
+import Data.Time.Clock        (UTCTime, NominalDiffTime,
+                                         diffUTCTime)
+import Data.Foldable          (or, find)
+
+import qualified Data.Binary            as BIN
+import qualified Data.ByteString        as B
+import qualified Data.ByteString.Lazy   as L
+import qualified Data.IntMap.Strict     as IM
+import qualified Data.Sequence          as Seq
+import qualified Data.IntSet            as IS
+import qualified Data.Set               as S
+import qualified Data.Time.Clock        as Clock
+
+import           Network                (HostName, PortID (..), connectTo)
+import           System.IO              (Handle, hSetBinaryMode)
+
+import           PeerMsgs
+import           BTUtils
+
+data PeerAddr = PeerAddr { peerHost      :: HostName
+                         , peerPort      :: PortID
+                         , peerTrackerId :: Maybe ByteString
+                         } deriving (Show)
+
+data PieceStatus = Claimed
+                 | Downloaded
+                 | Unclaimed
+                 deriving (Eq, Show)
+
+data PieceInfo = PieceInfo { pinfoLength :: Int
+                           , pinfoStatus :: PieceStatus
+                           } deriving (Eq, Show)
+
+type PeerPieces = Seq Bool
+type GlobalPieces = Seq PieceInfo
+type PieceID = Int
+
+data BlockStatus = BlockUnrequested
+                 | BlockRequested
+                 | BlockDownloaded ByteString
+                 deriving (Eq, Show)
+
+data BlockInfo = BlockInfo { binfoBlock  :: Block
+                           , binfoStatus :: BlockStatus
+                           } deriving (Eq, Show)
 
 data Peer = Peer
-    { peerIp :: HostName
-    , peerPort :: PortID
-    , peerId :: ByteString
-    , peerHandle :: Handle } deriving (Show)
-    -- haveField
-    -- choked/interested flags
+    { pAmChoking        :: Bool
+    , pAmInterested     :: Bool
+    , pChokingMe        :: Bool
+    , pInterestedMe     :: Bool
+    , pPeerPieces       :: PeerPieces
+    , pGlobPiecesImage  :: GlobalPieces
+    , pReqsFrom         :: Seq Block
+    , pReqsTo           :: Seq (UTCTime, Block)
+    , pClaimedPieceMap  :: Maybe (Seq BlockInfo)
+    }
+    -- TODO: Need last send time, last receive time.
+    -- TODO: Add "Force update" variable that changes every second to force long running STMs to execute.
 
-data Handshake = Handshake
-    { hsProtocolId     :: ByteString
-    , hsProtocolParams :: Word64
-    , hsInfoHash       :: ByteString
-    , hsPeerId         :: ByteString } deriving (Show)
 
-instance Binary Handshake where
-    get = do
-        pstrlen <- get :: Get Word8
-        protid <- getByteString (fromIntegral pstrlen)
-        pparams <- get :: Get Word64
-        infoh <- getByteString 20
-        peerid  <- getByteString 20
-        return $ Handshake protid pparams infoh peerid
+defaultPeer :: GlobalPieces -> Peer
+defaultPeer pieces = Peer
+    { pAmChoking = True
+    , pAmInterested = False
+    , pChokingMe = True
+    , pInterestedMe = False
+    , pPeerPieces = Seq.empty
+    , pGlobPiecesImage = pieces
+    , pReqsFrom = Seq.empty
+    , pReqsTo = Seq.empty
+    , pClaimedPieceMap = Nothing }
 
-    put Handshake {..} = do
-        put pstrlen
-        putByteString hsProtocolId
-        put hsProtocolParams
-        putByteString hsInfoHash
-        putByteString hsPeerId
-        where
-            pstrlen :: Word8
-            pstrlen = fromIntegral $ B.length hsProtocolId
+sendMsg :: Handle -> PeerMessage -> IO ()
+sendMsg to msg = do
+    printf "SENDING MSG: %s\n" (show msg)
+    B.hPut to $ encodeMsg msg
 
-data PeerMessage =
-      KeepAlive
-    | Choke
-    | Unchoke
-    | Interested
-    | Uninterested
-    | Have { haveIndex :: Int }
-    | Bitfield { bfBitfield :: ByteString}
-    | Request
-        { reqIndex :: Int
-        , reqBegin :: Int
-        , reqLength :: Int }
-    | Piece
-        { pieceIndex :: Int
-        , pieceBegin :: Int
-        , pieceBlock :: ByteString }
-    | Cancel
-        { cancIndex :: Int
-        , cancBegin :: Int
-        , cancLength :: Int }
-    | Port
-        { portPort :: PortID }
-
-instance Binary PeerMessage where
-    get = do
-        len <- getNum32
-        msgid <- lookAheadM getId
-        case msgid of
-            Nothing -> return KeepAlive
-            Just 0  -> return Choke
-            Just 1  -> return Unchoke
-            Just 2  -> return Interested
-            Just 3  -> return Uninterested
-            Just 4  -> Have <$> getNum32
-            Just 5  -> Bitfield <$> (getByteString $ len - 1)
-            Just 6  -> Request <$> getNum32 <*> getNum32 <*> getNum32
-            Just 7  -> Piece <$> getNum32 <*> getNum32 <*> (getByteString $ len - 9)
-            Just 8  -> Cancel <$> getNum32 <*> getNum32 <*> getNum32
-            Just 9  -> Port <$> PortNumber . fromIntegral <$> (get :: Get Word16)
-
-        where
-            getId = do
-                empty <- isEmpty
-                if empty then return Nothing
-                         else getWord8 >>= return . Just
-            getNum32 = fromIntegral <$> (get :: Get Word32)
-
-    put KeepAlive = putWord8 0
-    put Choke = putWord32 1 >> putWord8 0
-    put Unchoke = putWord32 1 >> putWord8 1
-    put Interested = putWord32 1 >> putWord8 2
-    put Uninterested = putWord32 1 >> putWord8 3
-    put (Have index) = putWord32 5 >> putWord8 4 >> putWord32 index
-    put (Bitfield bf) = putWord8 0
-    put Request {..} = do
-        putWord32 13
-        putWord8 6
-        putWord32 reqIndex
-        putWord32 reqBegin
-        putWord32 reqLength
-    put Piece {..} = do
-        putWord32 $ 9 + B.length pieceBlock
-        putWord8 7
-        putWord32 pieceIndex
-        putWord32 pieceBegin
-        putByteString pieceBlock
-    put Cancel {..} = do
-        putWord32 13
-        putWord8 8
-        putWord32 cancIndex
-        putWord32 cancBegin
-        putWord32 cancLength
-    put (Port (PortNumber port)) = do
-        putWord32 3
-        putWord8 9
-        put (fromIntegral port :: Word16)
-
-putWord32 :: Integral a => a -> Put
-putWord32 = put . (fromIntegral :: Integral a => a -> Word32)
-
-formHandshake :: ByteString -> ByteString -> Handshake
-formHandshake infohash peerid = Handshake "BitTorrent protocol" 0 infohash peerid
-
--- Connects to peer and launches peer threads. Does not close handle automatically,
--- so operation should be bracketed.
-connectToPeer :: Handshake -> ByteString -> PeerAddr -> IO (Either String Peer)
-connectToPeer handshake infohash (PeerAddr {..}) = do
-    handle <- connectTo paIp paPort
-    hSetBinaryMode handle True
-    handshakeToPeer handle handshake
-    Handshake {..} <- handshakeFromPeer handle
-
-    -- checks to validate peer
-    if | hsProtocolId /= "BitTorrent protocol" -> return $ Left "Peer not using 'BitTorrent protocol'."
-       | hsInfoHash /= infohash -> return $ Left "Peer seeking handshake for wrong file."
-       | fromMaybe hsPeerId paId == hsPeerId -> return $ Left "Peer ID doesn't match that reported by tracker."
-       | otherwise -> return $ Right $ Peer
-            { peerIp = paIp
-            , peerPort = paPort
-            , peerId = hsPeerId
-            , peerHandle = handle }
-
---connectToPeers :: Handshake -> ByteString -> [PeerAddr] -> IO [Peer]
-connectToPeers hs infoh peers = mapConcurrently (handle hdl . connectToPeer hs infoh) peers
+---------------------------------------------------------
+-- Potential issue: Time dependent actions like request expiration
+-- may not be run if STM blocks through retries. Since STMs only wake up
+-- when a TVar changes, not when times change, these actions may not happen
+-- on time.
+peerController :: TVar Peer -> TVar GlobalPieces -> Handle -> IO ()
+peerController tPeer tPieces handle = forever $ do
+    currTime   <- Clock.getCurrentTime
+    join . atomically $ do
+        peer   <- readTVar tPeer
+        pieces <- readTVar tPieces
+        sendHaves peer tPeer pieces handle
+            `orElse` manageInterest peer pieces tPeer handle
+            `orElse` reqCleanup peer tPeer currTime reqExpirationTime
+            `orElse` claimPiece tPeer peer tPieces pieces
+            `orElse` makeRequests handle peer tPeer currTime
     where
-        hdl :: IOException -> IO (Either String a)
-        hdl _ = return $ Left "IO exception occurred."
+        reqExpirationTime :: NominalDiffTime
+        reqExpirationTime = realToFrac 90
+    -- make a request
+    -- if not choked
+    -- and they're interested
+    -- and I have this piece
+    -- and
+
+    --TODO: Handle request prioritization into just currently claimed pieces.
+
+    --if unchoked ...
+    --    if not interested and have interest, express interest, get requests
+    --    elif interested but have no interest,
+    --    if pending requests are old, delete them
+    --    if pending requests < 5 and interested, send request            -- can we guarantee we'll never be interested when there's nothing we need?bou
+
+{- PEERCONTROLLER ACTIONS -}
+
+sendHaves :: Peer -> TVar Peer -> GlobalPieces -> Handle -> STM (IO ())
+sendHaves peer@(Peer {..}) tPeer pGlobPieces handle = do
+    case findNewPieces pGlobPieces pGlobPiecesImage  of
+        []   -> retry
+        pids -> do
+            writeTVar tPeer $ peer { pGlobPiecesImage = pGlobPieces }
+            return $ forM_ pids (sendMsg handle . Have)
+    where
+        findNewPieces :: GlobalPieces -> GlobalPieces -> [PieceID]
+        findNewPieces new old =
+            Seq.foldrWithIndex accum [] $ Seq.zipWith isNew new old
+
+        accum pid True acc  = pid : acc
+        accum _   _    acc = acc
+
+        isNew :: PieceInfo -> PieceInfo -> Bool
+        isNew (pinfoStatus -> Downloaded) (pinfoStatus -> Claimed)   =
+            True
+        isNew (pinfoStatus -> Downloaded) (pinfoStatus -> Unclaimed) =
+            True
+        isNew _ _ = False
+
+---------------------------------------------------------
+
+-- if peer has piece we want, gain interest.
+-- if peer has no piece we want, lose interest.
+manageInterest :: Peer -> GlobalPieces -> TVar Peer -> Handle -> STM (IO ())
+manageInterest peer@(Peer {..}) pieces tPeer handle =
+    case (pAmInterested, isInterested pieces pPeerPieces) of
+         (False, True) -> gainInterest         -- Not interested now, am interested.
+         (True, False) -> loseInterest         -- Interested now, lost interest.
+         _             -> retry
+    where
+        gainInterest = do
+             writeTVar tPeer (peer {pAmInterested = True})
+             return $ sendMsg handle Interested
+
+        loseInterest = do
+             writeTVar tPeer (peer {pAmInterested = False})
+             return $ sendMsg handle Uninterested
+
+-- find what unclaimed pieces we could download from this peer
+isInterested :: GlobalPieces -> PeerPieces -> Bool
+isInterested pieces peerPieces =
+    or $ Seq.zipWith interestedIn pieces peerPieces
+    where
+        interestedIn :: PieceInfo -> Bool -> Bool
+        interestedIn (isUnclaimed -> True) True = True
+        interestedIn _                     _    = False
+
+---------------------------------------------------------
+
+-- TODO: Replace expired requests in block queue.
+reqCleanup :: Peer -> TVar Peer -> UTCTime -> NominalDiffTime -> STM (IO ())
+reqCleanup peer@(Peer {..}) tPeer currTime expTime = do
+    case cleanedUpReqs == pReqsTo of
+        True  -> retry                   -- no expired requests ==> we're all good
+        False -> do
+            writeTVar tPeer (peer { pReqsTo = cleanedUpReqs })
+            return $ return ()
+    where
+        isFresh (reqTime, _) = currTime `diffUTCTime` reqTime < expTime
+        cleanedUpReqs        = Seq.filter isFresh pReqsTo
+        --updateBlockMap = foldr ()
+        --unrequestBlock block m =
+
+---------------------------------------------------------
+
+-- Tries to claim a new piece if no claim currently
+claimPiece :: TVar Peer -> Peer -> TVar GlobalPieces -> GlobalPieces -> STM(IO ())
+claimPiece tPeer peer@(Peer {pClaimedPieceMap = Nothing}) tPieces pieces =
+    case Seq.findIndexL isUnclaimed pieces of
+        Just pieceid -> updateState pieceid
+        Nothing      -> retry
+    where
+        updateState :: PieceID -> STM(IO ())
+        updateState pieceid = do
+            let pinfo = Seq.index pieces pieceid
+            writeTVar tPieces $ switchPieceSt Claimed pieceid pieces
+            writeTVar tPeer $
+                peer { pClaimedPieceMap = Just $ newPiece pieceid pieces pinfo }
+            return $ print $ "CONTROLLER: Claiming piece " ++ show pieceid
+
+claimPiece _ _ _ _ = retry
+
+-- Initialize map for new pieces
+newPiece :: PieceID -> GlobalPieces -> PieceInfo -> Seq BlockInfo
+newPiece pieceid pieces (PieceInfo {..}) =
+    case extra of
+        0 -> front
+        _ -> front |> endblockinfo
+    where
+        (wholeblocks, extra) = pinfoLength `divMod` 16384
+        front = fmap blockinfo (Seq.fromList [0..wholeblocks - 1])
+
+        blockinfo n = BlockInfo
+            { binfoBlock  = Block pieceid (16384*n) 16384
+            , binfoStatus = BlockUnrequested }
+
+        endblockinfo = BlockInfo
+            { binfoBlock  = Block pieceid (16384*wholeblocks) extra
+            , binfoStatus = BlockUnrequested }
+
+---------------------------------------------------------
+
+makeRequests :: Handle -> Peer -> TVar Peer -> UTCTime -> STM(IO())
+makeRequests handle peer@(Peer {..}) tPeer curTime =
+    case (pReqsTo, pChokingMe, pClaimedPieceMap) of
+        (roomInQueue -> True, False, unreqedBlock -> Just (blockId, block)) -> do
+            writeTVar tPeer peer { pReqsTo = pReqsTo |> (curTime, block)
+                                 , pClaimedPieceMap = pClaimedPieceMap >>= return . switchBlockSt BlockRequested blockId }
+            return $ sendMsg handle $ Request block
+        (_, _, _) ->
+            retry
+    where
+        roomInQueue q = Seq.length q <= 10
+
+        unreqedBlock :: Maybe (Seq BlockInfo) -> Maybe (Int, Block)
+        unreqedBlock curPiece = do
+            blocks <- curPiece
+            blockId <- Seq.findIndexL isUnrequested blocks
+            let block = binfoBlock $ Seq.index blocks blockId
+            return (blockId, block)
+
+---------------------------------------------------------
+
+-- Listens to incoming messages and changes state/responds to message.
+peerListener :: TVar Peer -> Handle -> IO ()
+peerListener tPeer handle = forever $ do
+    msg <- getMsg
+    case msg of
+        BlockMsg {..} -> printf "LISTENER: Received Piece of (index, begin): %s %s\n" (show blockIndex) (show blockBegin)
+        _             -> printf "LISTENER: %s\n" (show msg)
+    case msg of
+        KeepAlive           -> return ()
+        Choke               -> updatePeer (\p -> p { pChokingMe = True })
+        Unchoke             -> updatePeer (\p -> p { pChokingMe = False })
+        Interested          -> updatePeer (\p -> p { pInterestedMe = True })
+        Uninterested        -> updatePeer (\p -> p { pInterestedMe = False })
+        -- TODO: Add bitfield validation
+        Bitfield ps         -> updatePeer (\p -> p { pPeerPieces = ps })
+        Have ind            -> updatePeer (\p@(Peer {..}) -> p { pPeerPieces = Seq.update ind True pPeerPieces })
+        Request req         -> updatePeer (\p@(Peer {..}) -> p { pReqsFrom = pReqsFrom |> req } )
+        block@BlockMsg {..} -> updatePiece block tPeer
+        Cancel req          -> do
+            let filterReqsFrom p@(Peer {..}) = p { pReqsFrom = Seq.filter (req /=) pReqsFrom }
+            updatePeer filterReqsFrom
+        Port p              -> return ()
+    where
+        updatePeer = atomically . modifyTVar tPeer
+        getMsg = do
+            len <- B.hGet handle 4
+            let intLen = fromIntegral (BIN.decode $ L.fromStrict len :: Word32)
+            msg <- B.hGet handle intLen
+            return . decodeMsg $ len <> msg
+
+-- get block, saves block
+updatePiece :: PeerMessage -> TVar Peer -> IO ()
+updatePiece (BlockMsg {..}) tPeer = atomically $ modifyTVar tPeer updateState
+    where
+        updateState :: Peer -> Peer
+        updateState p@Peer {..} =
+            let recBlock = Block { reqIndex  = blockIndex
+                                 , reqBegin  = blockBegin
+                                 , reqLength = B.length blockContent }
+                isDifferentBlock (_, reqBlock) = reqBlock /= recBlock
+            in p { pReqsTo = Seq.filter isDifferentBlock pReqsTo
+                 , pClaimedPieceMap = pClaimedPieceMap `addBlock` blockContent }
+
+        blockNumber = blockBegin `div` 16384 - 1
+
+        addBlock :: Maybe (Seq BlockInfo) -> ByteString -> Maybe (Seq BlockInfo)
+        Nothing     `addBlock` _     = Nothing
+        Just blocks `addBlock` block = Just $
+            Seq.adjust (\b -> b { binfoStatus = BlockDownloaded block }) blockNumber blocks
+
+---------------------------------------------------------
+
+{- HANDSHAKE FUNCTIONS -}
+
+peerHandshake :: Handle -> ByteString -> ByteString -> Maybe ByteString -> IO ()
+peerHandshake handle infohash peerid trackerid = do
+    handshakeToPeer handle $ formHandshake infohash peerid
+    peerhs@Handshake {..} <- handshakeFromPeer handle
+    case validateHandshake peerhs (fromMaybe hsPeerId trackerid) infohash of
+        Left s    -> fail $ "invalid handshake: " ++ s
+        _         -> return ()
 
 handshakeToPeer :: Handle -> Handshake -> IO ()
-handshakeToPeer handle handshake = L.hPut handle $ BIN.encode handshake
+handshakeToPeer handle handshake = B.hPut handle $ encodeHandshake handshake
 
 handshakeFromPeer :: Handle -> IO Handshake
 handshakeFromPeer handle = do
     pstrlen <- L.hGet handle 1
-    let intPstrlen = fromIntegral (decode pstrlen :: Word8)
-    peerhs <- L.hGet handle $ intPstrlen + 49
-    return $ BIN.decode $ pstrlen `L.append` peerhs
+    let intPstrlen = fromIntegral $ L.head pstrlen
+    peerhs <- L.hGet handle $ intPstrlen + 48
+    return . decodeHandshake . L.toStrict $ pstrlen <> peerhs
+
+validateHandshake :: Handshake -> ByteString -> ByteString -> Either String ()
+validateHandshake (Handshake {..}) expectedPeerId infohash
+    | hsProtocolId /= "BitTorrent protocol" = Left "Peer not using 'BitTorrent protocol'."
+    | hsInfoHash /= infohash                = Left "Peer seeking handshake for wrong file."
+    | hsPeerId /= expectedPeerId            = Left "Peer ID doesn't match that reported by tracker."
+    | otherwise                             = Right ()
+
+---------------------------------------------------------
+
+{- SUPPORT FUNCTIONS -}
+
+isUnclaimed :: PieceInfo -> Bool
+isUnclaimed PieceInfo {pinfoStatus = Unclaimed} = True
+isUnclaimed _                                   = False
+
+isUnrequested :: BlockInfo -> Bool
+isUnrequested BlockInfo {binfoStatus = BlockUnrequested} = True
+isUnrequested _                                          = False
+
+switchPieceSt :: PieceStatus -> PieceID -> GlobalPieces -> GlobalPieces
+switchPieceSt st pieceid = Seq.adjust (\p -> p { pinfoStatus = st }) pieceid
+
+switchBlockSt :: BlockStatus -> Int -> Seq BlockInfo -> Seq BlockInfo
+switchBlockSt st blockid = Seq.adjust (\p -> p { binfoStatus = st }) blockid

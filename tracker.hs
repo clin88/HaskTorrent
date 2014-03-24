@@ -9,21 +9,21 @@ module Tracker where
     --, BTTrackerResponse
     --, makeRequestObject) where
 
+import Control.Applicative ((<|>))
 import           Control.Concurrent.Async (mapConcurrently)
 import           Control.Exception        (IOException, try)
-import           Data.BEncode
+import           Data.BEncode as BE
 import Data.ByteString (ByteString)
-import qualified Data.ByteString          as BS (take, unpack, append)
+import qualified Data.ByteString          as BS (take, unpack)
 import qualified Data.ByteString.Char8    as BS8 (pack, unpack)
 import           Data.Either              (rights)
 import           Data.List                (intersperse)
 import           Data.List.Split          (chunksOf)
 import           Data.Typeable            (Typeable)
-import           Data.Word                (Word16, Word8)
-import           Metainfo                 (BTMetainfo (..), infoHash, totalSize,
+import           Data.Word                (Word8)
+import           Metainfo                 (BTMetainfo, infoHash, totalSize,
                                            trackers)
-import           Network                  (HostName, PortID (..),
-                                           PortNumber (..))
+import           Network                  (PortID (..), PortNumber)
 import           Network.HTTP             (getRequest, getResponseBody,
                                            simpleHTTP)
 import           Network.HTTP.Types       (renderSimpleQuery)
@@ -69,7 +69,7 @@ data BTTrackerResponse =
 
 instance BEncode BTTrackerResponse where
     toBEncode = error "Encoding for BTTrackerResult not implemented."
-    fromBEncode dct = success dct
+    fromBEncode dct = failure dct <|> success dct
         where
             failure = fromDict $ BTTrackerFailure
                 <$>! "failure reason"
@@ -82,11 +82,11 @@ instance BEncode BTTrackerResponse where
                 <*>? "tracker id"
                 <*>? "warning message"
 
-
 newtype PeerList = PeerList { unPeers :: [PeerAddr] } deriving (Show)
 instance BEncode PeerList where
     toBEncode = error "Encoding of peer list not implemented."
     fromBEncode (BString val) = do return $ procPeerList val
+    fromBEncode (BDict _) = error "Decode for dictionary formatted peer not implemented."
 
 {- MAKE REQUEST -}
 
@@ -102,19 +102,20 @@ announceAllTrackers minfo = do
         safeRequest :: ByteString -> IO (Either IOException BTTrackerResponse)
         safeRequest = try . makeRequest req
 
--- TODO: Fix errors here to be catchable under one umbrella
 makeRequest :: BTTrackerRequest -> ByteString -> IO BTTrackerResponse
 makeRequest req url
     | urlHead /= "http" = fail "URL not HTTP."
     | otherwise = do
         response <- simpleHTTP request
         body <- fmap BS8.pack $ getResponseBody response
-        return $ decodeResponse body
+        case BE.decode body of
+            Left e -> fail $ show e
+            Right resp -> return resp
     where
         urlHead = BS.take 4 url
         urlString = BS8.unpack url
         request = getRequest $ urlString ++ makeQueryString req
-        decodeResponse = either error id . decode
+
 
 makeRequestObject :: BTMetainfo -> BTTrackerRequest
 makeRequestObject minfo = BTTrackerRequest
