@@ -79,7 +79,8 @@ data Peer = Peer
     , pReqsTo           :: Seq (UTCTime, Block)
     , pClaimedPieceMap  :: Maybe (Seq BlockInfo)
     }
-    -- TODO: Need last send time, last receive time,
+    -- TODO: Need last send time, last receive time.
+    -- TODO: Add "Force update" variable that changes every second to force long running STMs to execute.
 
 
 defaultPeer :: GlobalPieces -> Peer
@@ -264,7 +265,9 @@ makeRequests handle peer@(Peer {..}) tPeer curTime =
 peerListener :: TVar Peer -> Handle -> IO ()
 peerListener tPeer handle = forever $ do
     msg <- getMsg
-    printf "LISTENER: %s\n" (show msg)
+    case msg of
+        BlockMsg {..} -> printf "LISTENER: Received Piece of (index, begin): %s %s\n" (show blockIndex) (show blockBegin)
+        _             -> printf "LISTENER: %s\n" (show msg)
     case msg of
         KeepAlive           -> return ()
         Choke               -> updatePeer (\p -> p { pChokingMe = True })
