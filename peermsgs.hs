@@ -11,7 +11,7 @@ module PeerMsgs
     , decodeHandshake )
     where
 
-import           Data.Binary                (Binary, decode, encode, get, put)
+import           Data.Binary                (Binary, get, put)
 import           Data.ByteString            (ByteString)
 import           Data.Binary.Get
 import           Data.Binary.Put

@@ -1,7 +1,6 @@
 module BTUtils where
 
-import Text.Printf
-import Data.ByteString (ByteString)
+import Text.Printf (printf)
 
 logger :: String -> String -> IO ()
-logger pid msg = printf "(%s) %s \n" (show pid) msg
+logger pid = printf "(%s) %s \n" (show pid) 
