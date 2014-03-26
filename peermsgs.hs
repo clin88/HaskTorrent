@@ -1,17 +1,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards   #-}
 module PeerMsgs
-    ( Handshake(..)
-    , formHandshake
-    , PeerMessage(..)
-    , Block(..)
-    , encodeMsg
-    , decodeMsg
-    , encodeHandshake
-    , decodeHandshake )
-    where
+( Handshake(..)
+, formHandshake
+, PeerMessage(..)
+, Block(..)
+, encodeMsg
+, decodeMsg
+, encodeHandshake
+, decodeHandshake )
+where
 
-import           Data.Binary                (Binary, decode, encode, get, put)
+import           Data.Binary                (Binary, get, put)
 import           Data.ByteString            (ByteString)
 import           Data.Binary.Get
 import           Data.Binary.Put
@@ -56,10 +56,9 @@ instance Binary Handshake where
 formHandshake :: ByteString -> ByteString -> Handshake
 formHandshake infohash peerid = Handshake "BitTorrent protocol" 0 infohash peerid
 
-data Block = Block
-    { reqIndex  :: Int
-    , reqBegin  :: Int
-    , reqLength :: Int } deriving (Show, Eq, Ord)
+data Block = Block { reqIndex  :: Int
+                   , reqBegin  :: Int
+                   , reqLength :: Int } deriving (Show, Eq, Ord)
 
 data PeerMessage =
       KeepAlive
