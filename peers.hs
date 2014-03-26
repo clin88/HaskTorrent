@@ -8,12 +8,10 @@ module Peers
 where
 
 import Prelude hiding (or, and)
-import Debug.Trace
 
 import Text.Printf            (printf)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
-import GHC.Conc (unsafeIOToSTM)
 import Control.Monad          (forM_, forever, join)
 import Data.ByteString        (ByteString)
 import Data.Maybe             (fromMaybe, isJust)
@@ -242,15 +240,15 @@ makeRequests peer@(Peer {..}) tPeer handle = do
             return $ do
                 -- Fork thread that rings timer after 20 seconds
                 forkIO $ do
-                    threadDelay $ 20 * 1000000 
+                    threadDelay $ 45 * 1000000 
                     atomically $ writeTVar tTimer True
                 sendMsg handle $ Request block
         _                                          -> do
-            unsafeIOToSTM $ do 
-                printf "Failed to make request. room: %s choked: %s freeblock: %s interest: %s\n" (show room)
-                                                                                                  (show pChokingMe)
-                                                                                                  (show nextBlock)
-                                                                                                  (show pAmInterested)
+            -- unsafeIOToSTM $ do 
+            --     printf "Failed to make request. room: %s choked: %s freeblock: %s interest: %s\n" (show room)
+            --                                                                                       (show pChokingMe)
+            --                                                                                       (show nextBlock)
+            --                                                                                       (show pAmInterested)
             retry
   where
     roomInQueue q = Seq.length q <= 10
@@ -273,9 +271,8 @@ packPieces peer@Peer{..} tPeer
     | allBlocksDLed pBlocks = do
         writeTVar tPeer peer { pBlocks = Nothing }
         return $ print "Piece complete!"
-    | otherwise = do
-        unsafeIOToSTM $ print $ "Not complete piece: " ++ countDL pBlocks ++ "/" ++ countAll pBlocks
-        retry
+    | otherwise = retry
+        -- unsafeIOToSTM $ print $ "Not complete piece: " ++ countDL pBlocks ++ "/" ++ countAll pBlocks
   where
     allBlocksDLed (Just blocks) = and $ fmap isDownloaded blocks
     allBlocksDLed Nothing       = False

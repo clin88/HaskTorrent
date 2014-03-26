@@ -23,6 +23,21 @@ import           Tracker
 import Data.Sequence (Seq, (|>))
 import qualified Data.Sequence as Seq
 
+{- CLIENT TODOS:
+
+1. Server component.
+2. Reading/writing.
+3. Polling for more peers.
+4. Keepalives.
+5. Piece prioritization.
+6. "End game" mode when finishing a torrent.
+7. Claim relinquishment at crash.
+8. Choke/unchoke management.
+9. Download/upload rate.
+10. Torrent completed message.
+11. Forced claim relinquishment by message.
+-}
+
 peerid :: ByteString
 peerid = BS.take 20 "Many were increasingly of the opinion that they'd all made a big mistake"
 
