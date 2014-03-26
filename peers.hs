@@ -7,19 +7,20 @@ module Peers
     --, connectToPeer)
 where
 
-import Prelude hiding (or)
+import Prelude hiding (or, and)
+import Debug.Trace (trace)
 
 import Text.Printf            (printf)
 import Control.Concurrent.STM
+import GHC.Conc (unsafeIOToSTM)
 import Control.Monad          (forM_, forever, join)
 import Data.ByteString        (ByteString)
-import Data.Maybe             (fromMaybe)
+import Data.Maybe             (fromMaybe, isJust)
 import Data.Monoid            ((<>))
 import Data.Sequence          (Seq, (|>), ViewL((:<)))
 import Data.Word
-import Data.Time.Clock        (UTCTime, NominalDiffTime,
-                                         diffUTCTime)
-import Data.Foldable          (or)
+import Data.Time.Clock        (UTCTime, NominalDiffTime, diffUTCTime)
+import Data.Foldable          (or, and, foldrM)
 
 import qualified Data.Binary            as BIN
 import qualified Data.ByteString        as B
@@ -69,7 +70,7 @@ data Peer = Peer
     , pGlobPiecesImage :: GlobalPieces
     , pReqsFrom        :: Seq Block
     , pReqsTo          :: Seq (UTCTime, Block)
-    , pBlocksMap       :: Maybe (Seq BlockInfo)
+    , pBlocks          :: Maybe (Seq BlockInfo)
     }
     -- TODO: Need last send time, last receive time.
     -- TODO: Add "Force update" variable that changes every second to force long running STMs to execute.
@@ -85,7 +86,7 @@ defaultPeer pieces = Peer
     , pGlobPiecesImage = pieces
     , pReqsFrom        = Seq.empty
     , pReqsTo          = Seq.empty
-    , pBlocksMap = Nothing }
+    , pBlocks = Nothing }
 
 sendMsg :: Handle -> PeerMessage -> IO ()
 sendMsg to msg = do
@@ -111,7 +112,7 @@ peerController tPeer tPieces handle = forever $ do
             `orElse` sendResponse   peer tPeer handle
   where
     reqExpirationTime :: NominalDiffTime
-    reqExpirationTime = realToFrac (90 :: Int)
+    reqExpirationTime = realToFrac (10 :: Int)
     -- make a request
     -- if not choked
     -- and they're interested
@@ -180,25 +181,35 @@ isInterested pieces peerPieces =
 
 ---------------------------------------------------------
 
--- TODO: Replace expired requests in block queue.
+-- TODO: Clean up recieved requests as well.
 reqCleanup :: Peer -> TVar Peer -> UTCTime -> NominalDiffTime -> STM (IO ())
 reqCleanup peer@(Peer {..}) tPeer currTime expTime = do
-    case cleanedUpReqs == pReqsTo of
+    case freshReqs == pReqsTo of
         True  -> retry                   -- no expired requests ==> we're all good
         False -> do
-            writeTVar tPeer (peer { pReqsTo = cleanedUpReqs })
-            return $ return ()
+            writeTVar tPeer peer { pReqsTo = freshReqs
+                                 , pBlocks = newBlocks }
+            return $ print $ "Cleaning up requests!" ++ (show $ fmap snd freshReqs)
   where
+    isFresh :: (UTCTime, Block) -> Bool
     isFresh (reqTime, _) = currTime `diffUTCTime` reqTime < expTime
-    cleanedUpReqs        = Seq.filter isFresh pReqsTo
-        --updateBlockMap = foldr ()
-        --unrequestBlock block m =
+
+    newBlocks :: Maybe (Seq BlockInfo)
+    newBlocks = do
+        blocks <- pBlocks
+        let oldBlocks = Seq.findIndicesL isExpired blocks
+        return $ foldr (switchBlockSt BlockUnrequested) blocks oldBlocks
+      where
+        isExpired (BlockInfo b _) = isJust $ Seq.elemIndexL b oldReqs
+
+    (freshReqs, fmap snd -> oldReqs) = Seq.partition isFresh pReqsTo
+
 
 ---------------------------------------------------------
 
 -- Tries to claim a new piece if no claim currently
 claimPiece :: Peer -> TVar Peer -> GlobalPieces -> TVar GlobalPieces -> STM(IO ())
-claimPiece peer@(Peer {pBlocksMap = Nothing}) tPeer pieces tPieces =
+claimPiece peer@(Peer {pBlocks = Nothing}) tPeer pieces tPieces =
     case Seq.findIndexL isUnclaimed pieces of
         Just pieceid -> updateState pieceid
         Nothing      -> retry
@@ -208,7 +219,7 @@ claimPiece peer@(Peer {pBlocksMap = Nothing}) tPeer pieces tPieces =
         let pinfo = Seq.index pieces pieceid
         writeTVar tPieces $ switchPieceSt Claimed pieceid pieces
         writeTVar tPeer $
-            peer { pBlocksMap = Just $ newPiece pieceid pinfo }
+            peer { pBlocks = Just $ newPiece pieceid pinfo }
         return $ print $ "CONTROLLER: Claiming piece " ++ show pieceid
 
 claimPiece _ _ _ _ = retry
@@ -235,19 +246,24 @@ newPiece pieceid (PieceInfo {..}) =
 
 makeRequests :: Peer -> TVar Peer -> Handle -> UTCTime -> STM(IO())
 makeRequests peer@(Peer {..}) tPeer handle curTime =
-    case (pReqsTo, pChokingMe, pBlocksMap) of
-        (roomInQueue -> True, False, unreqedBlock -> Just (blockId, block)) -> do
+    case (pReqsTo, pChokingMe, pBlocks, pAmInterested) of
+        (roomInQueue -> True,          False,
+         unreqedBlock -> Just (blockId,block),True) -> do
             writeTVar tPeer peer { pReqsTo = pReqsTo |> (curTime, block)
-                                 , pBlocksMap = pBlocksMap >>= return . switchBlockSt BlockRequested blockId }
+                                 , pBlocks = pBlocks >>= return . switchBlockSt BlockRequested blockId }
             return $ sendMsg handle $ Request block
-        (_, _, _) ->
+        (roomInQueue -> isroom, choked, unreqedBlock -> freeblock) -> do
+            unsafeIOToSTM $ do 
+                printf "Failed to make request. room: %s choked: %s freeblock: %s\n" (show isroom)
+                                                                                     (show choked)
+                                                                                     (show freeblock)
             retry
   where
     roomInQueue q = Seq.length q <= 10
 
     unreqedBlock :: Maybe (Seq BlockInfo) -> Maybe (Int, Block)
-    unreqedBlock curPiece = do
-        blocks <- curPiece
+    unreqedBlock curBlocks = do
+        blocks <- curBlocks
         blockId <- Seq.findIndexL isUnrequested blocks
         let block = binfoBlock $ Seq.index blocks blockId
         return (blockId, block)
@@ -255,15 +271,15 @@ makeRequests peer@(Peer {..}) tPeer handle curTime =
 ---------------------------------------------------------
 
 packPieces :: Peer -> TVar Peer -> STM(IO())
-packPieces peer@Peer{..} tPeer | blockComplete pBlocksMap = do
-    writeTVar tPeer peer { pBlocksMap = Nothing }
+packPieces peer@Peer{..} tPeer | blockComplete pBlocks = do
+    writeTVar tPeer peer { pBlocks = Nothing }
     return $ print "Piece complete!"
     -- writeTVar tPieces $ switchPieceSt Downloaded pieceID pieces
-    -- writeTChan tWriterChan $ packBlocks pBlocksMap
+    -- writeTChan tWriterChan $ packBlocks pBlocks
     -- TODO: Check hash
   where
-    blockComplete (Just blocks) = or $ fmap isDownloaded blocks
-    blockComplete Nothing       = True
+    blockComplete (Just blocks) = and $ fmap isDownloaded blocks
+    blockComplete Nothing       = False
 
     packBlocks = B.concat . fmap 
         (\BlockInfo {binfoStatus = BlockDownloaded dl} -> dl)
@@ -324,7 +340,7 @@ updatePiece (BlockMsg {..}) tPeer = atomically $ modifyTVar tPeer updateState
                                 , reqLength = B.length blockContent }
             isDifferentBlock (_, reqBlock) = reqBlock /= recBlock
         in p { pReqsTo = Seq.filter isDifferentBlock pReqsTo
-                , pBlocksMap = pBlocksMap `addBlock` blockContent }
+                , pBlocks = pBlocks `addBlock` blockContent }
 
     blockNumber = blockBegin `div` 16384 - 1
 
