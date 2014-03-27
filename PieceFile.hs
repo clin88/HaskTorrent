@@ -2,15 +2,12 @@
 
 module PieceFile
 ( Mode(..)
+, PieceFileError
 , PieceFile(), pieceFile
 , closeET, close
 ,  readET, read
 , writeET, write
 ) where
-
--- todo rename ErrorT functions to reflect their type
--- add functions with IO type
--- put the filename into pieceinfo
 
 -- Not threadsafe.
 -- Recommended import:
@@ -43,9 +40,8 @@ import Data.ByteString (ByteString)
 
 import Prelude hiding (read)
 import Text.Printf (printf)
-import Foreign.C.String (CStringLen)
 import Foreign.C.Types (CChar)
-import Control.Monad.Error (ErrorT, Error, liftIO, throwError, forM_, unless, runErrorT)
+import Control.Monad.Error (ErrorT, Error, liftIO, throwError, unless, runErrorT)
 import Data.Typeable (Typeable)
 
 type PieceFilePtr = Ptr CChar
@@ -60,9 +56,9 @@ data PieceFile = PieceFile
 pieceFile :: FilePath -> Mode -> PieceInfo -> IO PieceFile
 pieceFile path mode info = do
     -- mmap the path from zero to the file's length
-    (ptr, rawsize, offset, size) <- MMap.mmapFilePtr path
-                                                     (mmapMode mode)
-                                                     (Just (0, PI.piFileSize info))
+    (ptr, rawsize, _, _) <- MMap.mmapFilePtr path
+                                             (mmapMode mode)
+                                             (Just (0, PI.piFileSize info))
     -- make an ioref containing the buffer pointer and unmap function
     rmstate <- IORef.newIORef $ Just ( ptr
                                      , MMap.munmapFilePtr ptr rawsize )
@@ -111,6 +107,7 @@ writeET handle pid bytes = do
 
 data Mode = Create
           | Resume
+          deriving (Show, Eq)
 
 mmapMode :: Mode -> MMap.Mode
 mmapMode Create = MMap.ReadWriteEx
